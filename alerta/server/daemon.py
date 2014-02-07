@@ -165,8 +165,6 @@ class ServerMessage(MessageHandler):
 
         MessageHandler.__init__(self, self.mq.conn)
 
-        print 'ServerMessage INIT complete'
-
     def on_message(self, body, message):
 
         LOG.debug("Received body : %s", body)
@@ -177,7 +175,7 @@ class ServerMessage(MessageHandler):
             LOG.warning('Failed to parse heartbeat - %s: %s', e, body)
         else:
             if heartbeat.get_type() == 'Heartbeat':
-                LOG.info('*** HEARTBEAT *** %s', heartbeat)
+                LOG.info('*** Heartbeat *** %s', heartbeat)
                 heartbeat.receive_now()
                 self.msg_queue.put(heartbeat)
                 message.ack()

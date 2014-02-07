@@ -8,7 +8,7 @@ from alerta.common import log as logging
 from alerta.common import config
 from alerta.common.utils import DateEncoder
 
-Version = '2.1.0'
+Version = '2.1.1'
 
 LOG = logging.getLogger(__name__)
 CONF = config.CONF
@@ -35,13 +35,10 @@ class ApiClient(object):
         LOG.debug('header = %s', msg.get_header())
         LOG.debug('message = %s', msg.get_body())
 
-        if msg.get_type().endswith('Alert'):
-            url = 'http://%s:%s/alerta/api/%s/alerts/alert.json' % (self.host, self.port, self.version)
-        elif msg.get_type() == 'Heartbeat':
+        if msg.get_type() == 'Heartbeat':
             url = 'http://%s:%s/alerta/api/%s/heartbeats/heartbeat.json' % (self.host, self.port, self.version)
         else:
-            LOG.error('Message type %s not supported by this API endpoint.', msg.get_type())
-            raise
+            url = 'http://%s:%s/alerta/api/%s/alerts/alert.json' % (self.host, self.port, self.version)
 
         payload = json.dumps(msg.get_body(), ensure_ascii=False, cls=DateEncoder)
         headers = {'Content-Type': 'application/json'}

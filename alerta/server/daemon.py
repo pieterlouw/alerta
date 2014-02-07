@@ -155,22 +155,22 @@ class WorkerThread(threading.Thread):
         self.queue.task_done()
 
 
-class AlertaDaemon(Daemon):
+class ServerMessage(MessageHandler):
 
-    alerta_opts = {
-        'forward_duplicate': 'no',
-    }
+    def __init__(self, mq, queue, statsd):
 
-    def __init__(self, prog, **kwargs):
+        self.mq = mq
+        self.queue = queue
+        self.statsd = statsd
 
-        config.register_opts(AlertaDaemon.alerta_opts)
+        MessageHandler.__init__(self, self.mq.conn)
 
-        Daemon.__init__(self, prog, kwargs)
+        print 'ServerMessage INIT complete'
 
-    def on_message(self, headers, body):
+    def on_message(self, body, message):
 
-        print headers
         print body
+        headers = {}
 
         if 'type' not in headers or 'correlation-id' not in headers:
             LOG.warning('Malformed header missing "type" or "correlation-id": %s', headers)
@@ -197,6 +197,21 @@ class AlertaDaemon(Daemon):
                 LOG.debug('Queueing successfully parsed alert %s', alert.get_body())
                 self.queue.put(alert)
 
+        message.ack()
+
+
+class AlertaDaemon(Daemon):
+
+    alerta_opts = {
+        'forward_duplicate': 'no',
+    }
+
+    def __init__(self, prog, **kwargs):
+
+        config.register_opts(AlertaDaemon.alerta_opts)
+
+        Daemon.__init__(self, prog, kwargs)
+
     def run(self):
 
         self.running = True
@@ -208,8 +223,9 @@ class AlertaDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=self.on_message)
-        self.mq.subscribe()
+        self.mq.connect()
+
+        messages = ServerMessage(self.mq, self.queue, self.statsd)
 
         # Start worker threads
         LOG.debug('Starting %s worker threads...', CONF.server_threads)
@@ -224,15 +240,7 @@ class AlertaDaemon(Daemon):
 
         while not self.shuttingdown:
             try:
-                LOG.debug('Send heartbeat...')
-                heartbeat = Heartbeat(version=Version, timeout=CONF.loop_every)
-                self.mq.send(heartbeat)
-
-                time.sleep(CONF.loop_every)
-                LOG.info('Alert processing queue length is %d', self.queue.qsize())
-                self.carbon.metric_send('alerta.alerts.queueLength', self.queue.qsize())
-                self.db.update_queue_metric(self.queue.qsize())
-
+                messages.run()
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
 

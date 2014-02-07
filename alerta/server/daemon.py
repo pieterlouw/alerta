@@ -155,17 +155,22 @@ class WorkerThread(threading.Thread):
         self.queue.task_done()
 
 
-class ServerMessage(MessageHandler):
+class AlertaDaemon(Daemon):
 
-    def __init__(self, mq, queue, statsd):
+    alerta_opts = {
+        'forward_duplicate': 'no',
+    }
 
-        self.mq = mq
-        self.queue = queue
-        self.statsd = statsd
+    def __init__(self, prog, **kwargs):
 
-        MessageHandler.__init__(self)
+        config.register_opts(AlertaDaemon.alerta_opts)
+
+        Daemon.__init__(self, prog, kwargs)
 
     def on_message(self, headers, body):
+
+        print headers
+        print body
 
         if 'type' not in headers or 'correlation-id' not in headers:
             LOG.warning('Malformed header missing "type" or "correlation-id": %s', headers)
@@ -192,22 +197,6 @@ class ServerMessage(MessageHandler):
                 LOG.debug('Queueing successfully parsed alert %s', alert.get_body())
                 self.queue.put(alert)
 
-    def on_disconnected(self):
-        self.mq.reconnect()
-
-
-class AlertaDaemon(Daemon):
-
-    alerta_opts = {
-        'forward_duplicate': 'no',
-    }
-
-    def __init__(self, prog, **kwargs):
-
-        config.register_opts(AlertaDaemon.alerta_opts)
-
-        Daemon.__init__(self, prog, kwargs)
-
     def run(self):
 
         self.running = True
@@ -219,7 +208,7 @@ class AlertaDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=ServerMessage(self.mq, self.queue, self.statsd))
+        self.mq.connect(callback=self.on_message)
         self.mq.subscribe()
 
         # Start worker threads

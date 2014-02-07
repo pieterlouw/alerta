@@ -78,6 +78,17 @@ class Messaging(object):
 
 class MessageHandler(ConsumerMixin):
 
-    def on_message(self, body, message):
-        LOG.info("Received message %s %s", body, message)
+    exchange = Exchange(CONF.inbound_queue, 'fanout', durable=True)
+    queue = Queue(CONF.inbound_queue, exchange=exchange, routing_key=CONF.inbound_queue)
 
+    def __init__(self, connection):
+        self.connection = connection
+
+    def get_consumers(self, Consumer, channel):
+        print 'registering callbacks'
+        return [Consumer(queues=[self.queue],
+                         callback=[self.on_message])]
+
+    def on_message(self, body, message):
+        print('Got alert: {0!r}'.format(body))
+        message.ack()

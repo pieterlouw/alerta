@@ -9,22 +9,12 @@ from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common.dedup import DeDup
 from alerta.solarwinds.swis import SwisClient, SOLAR_WINDS_SEVERITY_LEVELS, SOLAR_WINDS_CORRELATED_EVENTS
-from alerta.common.mq import Messaging, MessageHandler
+from alerta.common.amqp import Messaging
 
-Version = '2.1.0'
+Version = '2.2.0'
 
 LOG = logging.getLogger(__name__)
 CONF = config.CONF
-
-
-class SolarWindsMessage(MessageHandler):
-
-    def __init__(self, mq):
-        self.mq = mq
-        MessageHandler.__init__(self)
-
-    def on_disconnected(self):
-        self.mq.reconnect()
 
 
 class SolarWindsDaemon(Daemon):

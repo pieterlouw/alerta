@@ -12,12 +12,12 @@ from alerta.common import config
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common import severity_code
-from alerta.common.mq import Messaging, MessageHandler
+from alerta.common.amqp import Messaging
 from alerta.common.daemon import Daemon
 from alerta.common.dedup import DeDup
 from alerta.common.graphite import Carbon
 
-Version = '2.1.0'
+Version = '2.2.0'
 
 LOG = logging.getLogger(__name__)
 CONF = config.CONF
@@ -197,16 +197,6 @@ class WorkerThread(threading.Thread):
             LOG.info('%s: not responding', node)
 
         return rc, rtt, loss, stdout
-
-
-class PingerMessage(MessageHandler):
-
-    def __init__(self, mq):
-        self.mq = mq
-        MessageHandler.__init__(self)
-
-    def on_disconnected(self):
-        self.mq.reconnect()
 
 
 class PingerDaemon(Daemon):

@@ -85,7 +85,7 @@ class WorkerThread(threading.Thread):
                     LOG.info('%s : Alert forwarded to %s and %s', duplicateAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
 
                 self.db.update_timer_metric(duplicateAlert.create_time, duplicateAlert.last_receive_time)
-                self.queue.task_done()
+                self.worker_queue.task_done()
 
             elif self.db.is_correlated(incomingAlert):
                 # Diff sev alert ... 1. update existing document with severity, createTime, receiveTime,
@@ -115,7 +115,7 @@ class WorkerThread(threading.Thread):
                 LOG.info('%s : Alert forwarded to %s and %s', correlatedAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
 
                 self.db.update_timer_metric(correlatedAlert.create_time, correlatedAlert.receive_time)
-                self.queue.task_done()
+                self.worker_queue.task_done()
 
             else:
                 # New alert so ... 1. insert entire document
@@ -169,35 +169,32 @@ class ServerMessage(MessageHandler):
 
     def on_message(self, body, message):
 
-        print body
-        headers = {}
-
-        if 'type' not in headers or 'correlation-id' not in headers:
-            LOG.warning('Malformed header missing "type" or "correlation-id": %s', headers)
-            self.statsd.metric_send('alerta.alerts.rejected', 1)
-            return
-
-        LOG.info("Received %s %s", headers['type'], headers['correlation-id'])
         LOG.debug("Received body : %s", body)
 
-        if headers['type'] == 'Heartbeat':
+        try:
             heartbeat = Heartbeat.parse_heartbeat(body)
-            if heartbeat:
-                heartbeat.receive_now()
-                LOG.debug('Queueing successfully parsed heartbeat %s', heartbeat.get_body())
-                self.msg_queue.put(heartbeat)
+        except ValueError, e:
+            LOG.warning('Failed to parse heartbeat - %s: %s', e, body)
         else:
-            try:
-                alert = Alert.parse_alert(body)
-            except ValueError:
-                self.statsd.metric_send('alerta.alerts.rejected', 1)
+            if heartbeat.get_type() == 'Heartbeat':
+                LOG.info('*** HEARTBEAT *** %s', heartbeat)
+                heartbeat.receive_now()
+                self.msg_queue.put(heartbeat)
+                message.ack()
                 return
-            if alert:
-                alert.receive_now()
-                LOG.debug('Queueing successfully parsed alert %s', alert.get_body())
-                self.msg_queue.put(alert)
 
-        message.ack()
+        try:
+            alert = Alert.parse_alert(body)
+        except ValueError, e:
+            LOG.error('Failed to parse alert - %s: %s', e, body)
+            message.ack()
+            return
+        else:
+            LOG.info('*** %s *** %s', alert.get_type(), alert)
+            alert.receive_now()
+            self.msg_queue.put(alert)
+            message.ack()
+            return
 
 
 class AlertaDaemon(Daemon):

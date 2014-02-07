@@ -17,16 +17,16 @@ DEFAULT_TIMEOUT = 300  # seconds
 
 class Heartbeat(object):
 
-    def __init__(self, origin=None, version='unknown', heartbeatid=None, create_time=None, timeout=None):
+    def __init__(self, event_type='Heartbeat', origin=None, timeout=None, heartbeatid=None, version='unknown', create_time=None):
 
         prog = os.path.basename(sys.argv[0])
 
-        self.heartbeatid = heartbeatid or str(uuid4())
-        self.event_type = 'Heartbeat'
+        self.event_type = event_type
         self.origin = origin or '%s/%s' % (prog, os.uname()[1])
+        self.timeout = timeout or DEFAULT_TIMEOUT
+        self.heartbeatid = heartbeatid or str(uuid4())
         self.version = version
         self.create_time = create_time or datetime.datetime.utcnow()
-        self.timeout = timeout or DEFAULT_TIMEOUT
 
     def get_id(self):
         return self.heartbeatid
@@ -80,9 +80,10 @@ class Heartbeat(object):
                 return
 
         return Heartbeat(
+            event_type=heartbeat.get('type', None),
             origin=heartbeat.get('origin', None),
-            version=heartbeat.get('version', None),
-            heartbeatid=heartbeat.get('id', None),
-            create_time=heartbeat.get('createTime', None),
             timeout=heartbeat.get('timeout', None),
+            heartbeatid=heartbeat.get('id', None),
+            version=heartbeat.get('version', None),
+            create_time=heartbeat.get('createTime', None)
         )

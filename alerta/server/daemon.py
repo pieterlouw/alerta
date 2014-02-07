@@ -9,11 +9,11 @@ from alerta.common.daemon import Daemon
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common import status_code, severity_code
-from alerta.common.mq import Messaging, MessageHandler
+from alerta.common.amqp import Messaging, MessageHandler
 from alerta.server.database import Mongo
 from alerta.common.graphite import Carbon, StatsD
 
-Version = '2.1.0'
+Version = '2.2.0'
 
 LOG = logging.getLogger(__name__)
 CONF = config.CONF

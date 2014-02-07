@@ -186,9 +186,10 @@ class AlertaDaemon(Daemon):
         self.statsd = StatsD()  # graphite metrics
         self.mq = Messaging()
 
+        self.shuttingdown = False
+
     def run(self):
 
-        self.running = True
         self.mq.connect()
 
         # Start worker threads
@@ -210,10 +211,9 @@ class AlertaDaemon(Daemon):
                 time.sleep(CONF.loop_every)
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
+                MessageHandler.should_stop = True
 
         LOG.info('Shutdown request received...')
-        self.running = False
-
         w.join()
 
         LOG.info('Disconnecting from message broker...')

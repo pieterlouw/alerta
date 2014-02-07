@@ -1,7 +1,6 @@
 
 import time
 import threading
-import Queue
 
 from alerta.common import config
 from alerta.common import log as logging
@@ -27,7 +26,6 @@ class WorkerThread(threading.Thread):
 
         LOG.debug('Initialising %s...', self.getName())
         self.mq = mq
-
 
     def run(self):
 
@@ -183,17 +181,14 @@ class AlertaDaemon(Daemon):
 
         Daemon.__init__(self, prog, kwargs)
 
-    def run(self):
-
-        self.running = True
-
-        self.internal_queue = Queue.Queue()  # Create internal queue
         self.db = Mongo()       # mongo database
         self.carbon = Carbon()  # carbon metrics
         self.statsd = StatsD()  # graphite metrics
-
-        # Connect to message queue
         self.mq = Messaging()
+
+    def run(self):
+
+        self.running = True
         self.mq.connect()
 
         # Start worker threads
@@ -219,8 +214,6 @@ class AlertaDaemon(Daemon):
         LOG.info('Shutdown request received...')
         self.running = False
 
-        for i in range(CONF.server_threads):
-            self.internal_queue.put(None)
         w.join()
 
         LOG.info('Disconnecting from message broker...')

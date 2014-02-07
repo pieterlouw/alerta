@@ -212,11 +212,7 @@ class AlertaDaemon(Daemon):
                 LOG.debug('Send heartbeat...')
                 heartbeat = Heartbeat(version=Version, timeout=CONF.loop_every)
                 self.mq.send(heartbeat)
-
                 time.sleep(CONF.loop_every)
-                LOG.info('Alert processing queue length is %d', self.queue.qsize())
-                self.carbon.metric_send('alerta.alerts.queueLength', self.queue.qsize())
-                self.db.update_queue_metric(self.queue.qsize())
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
 

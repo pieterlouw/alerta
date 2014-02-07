@@ -21,12 +21,12 @@ CONF = config.CONF
 
 class WorkerThread(threading.Thread):
 
-    def __init__(self, mq, queue, statsd):
+    def __init__(self, mq, worker_queue, statsd):
 
         threading.Thread.__init__(self)
         LOG.debug('Initialising %s...', self.getName())
 
-        self.queue = queue   # internal queue
+        self.worker_queue = worker_queue   # internal queue
         self.mq = mq               # message broker
         self.db = Mongo()       # mongo database
         self.statsd = statsd  # graphite metrics
@@ -36,7 +36,7 @@ class WorkerThread(threading.Thread):
         while True:
             LOG.debug('Waiting on input queue...')
             try:
-                incomingAlert = self.queue.get(True, CONF.loop_every)
+                incomingAlert = self.worker_queue.get(True, CONF.loop_every)
             except Queue.Empty:
                 continue
 
@@ -48,7 +48,7 @@ class WorkerThread(threading.Thread):
                 heartbeat = incomingAlert
                 LOG.info('Heartbeat received from %s...', heartbeat.origin)
                 self.db.update_hb(heartbeat)
-                self.queue.task_done()
+                self.worker_queue.task_done()
                 continue
             else:
                 LOG.info('Alert received from %s...', incomingAlert.origin)
@@ -57,12 +57,12 @@ class WorkerThread(threading.Thread):
                 suppress = incomingAlert.transform_alert()
             except RuntimeError:
                 self.statsd.metric_send('alerta.alerts.error', 1)
-                self.queue.task_done()
+                self.worker_queue.task_done()
                 continue
 
             if suppress:
                 LOG.info('Suppressing alert %s', incomingAlert.get_id())
-                self.queue.task_done()
+                self.worker_queue.task_done()
                 continue
 
             if self.db.is_duplicate(incomingAlert, incomingAlert.severity):
@@ -146,21 +146,21 @@ class WorkerThread(threading.Thread):
                 LOG.info('%s : Alert forwarded to %s and %s', incomingAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
 
                 self.db.update_timer_metric(incomingAlert.create_time, incomingAlert.receive_time)
-                self.queue.task_done()
+                self.worker_queue.task_done()
 
             # update application stats
             self.statsd.metric_send('alerta.alerts.total', 1)
             self.statsd.metric_send('alerta.alerts.%s' % incomingAlert.severity, 1)
 
-        self.queue.task_done()
+        self.worker_queue.task_done()
 
 
 class ServerMessage(MessageHandler):
 
-    def __init__(self, mq, queue, statsd):
+    def __init__(self, mq, msg_queue, statsd):
 
         self.mq = mq
-        self.queue = queue
+        self.msg_queue = msg_queue
         self.statsd = statsd
 
         MessageHandler.__init__(self, self.mq.conn)
@@ -185,7 +185,7 @@ class ServerMessage(MessageHandler):
             if heartbeat:
                 heartbeat.receive_now()
                 LOG.debug('Queueing successfully parsed heartbeat %s', heartbeat.get_body())
-                self.queue.put(heartbeat)
+                self.msg_queue.put(heartbeat)
         else:
             try:
                 alert = Alert.parse_alert(body)
@@ -195,7 +195,7 @@ class ServerMessage(MessageHandler):
             if alert:
                 alert.receive_now()
                 LOG.debug('Queueing successfully parsed alert %s', alert.get_body())
-                self.queue.put(alert)
+                self.msg_queue.put(alert)
 
         message.ack()
 
@@ -216,7 +216,7 @@ class AlertaDaemon(Daemon):
 
         self.running = True
 
-        self.queue = Queue.Queue()  # Create internal queue
+        self.internal_queue = Queue.Queue()  # Create internal queue
         self.db = Mongo()       # mongo database
         self.carbon = Carbon()  # carbon metrics
         self.statsd = StatsD()  # graphite metrics
@@ -225,12 +225,12 @@ class AlertaDaemon(Daemon):
         self.mq = Messaging()
         self.mq.connect()
 
-        messages = ServerMessage(self.mq, self.queue, self.statsd)
+        messages = ServerMessage(self.mq, self.internal_queue, self.statsd)
 
         # Start worker threads
         LOG.debug('Starting %s worker threads...', CONF.server_threads)
         for i in range(CONF.server_threads):
-            w = WorkerThread(self.mq, self.queue, self.statsd)
+            w = WorkerThread(self.mq, self.internal_queue, self.statsd)
             try:
                 w.start()
             except Exception, e:
@@ -248,7 +248,7 @@ class AlertaDaemon(Daemon):
         self.running = False
 
         for i in range(CONF.server_threads):
-            self.queue.put(None)
+            self.internal_queue.put(None)
         w.join()
 
         LOG.info('Disconnecting from message broker...')

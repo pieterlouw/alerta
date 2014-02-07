@@ -225,7 +225,7 @@ class PingerDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=PingerMessage(self.mq))
+        self.mq.connect()
 
         self.dedup = DeDup()
 

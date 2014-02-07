@@ -46,7 +46,7 @@ class CloudWatchDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=CloudWatchMessage(self.mq))
+        self.mq.connect()
 
         self.dedup = DeDup(by_value=True)
 

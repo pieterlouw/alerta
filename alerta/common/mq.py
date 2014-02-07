@@ -25,13 +25,6 @@ class Messaging(object):
         'inbound_queue': '/exchange/alerts',
         'outbound_queue': '/queue/logger',
         'outbound_topic': '/topic/notify',
-
-        'rabbit_host': 'localhost',
-        'rabbit_port': 5672,
-        'rabbit_use_ssl': False,
-        'rabbit_userid': 'guest',
-        'rabbit_password': 'guest',
-        'rabbit_virtual_host': '/',
     }
 
     def __init__(self):

@@ -48,7 +48,7 @@ class SolarWindsDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=SolarWindsMessage(self.mq))
+        self.mq.connect()
 
         self.dedup = DeDup(by_value=True)
 

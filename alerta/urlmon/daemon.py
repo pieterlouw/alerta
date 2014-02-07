@@ -316,7 +316,7 @@ class UrlmonDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=UrlmonMessage(self.mq))
+        self.mq.connect()
 
         self.dedup = DeDup()
 

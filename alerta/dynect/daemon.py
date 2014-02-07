@@ -45,7 +45,7 @@ class DynectDaemon(Daemon):
 
         # Connect to message queue
         self.mq = Messaging()
-        self.mq.connect(callback=DynectMessage(self.mq))
+        self.mq.connect()
 
         while not self.shuttingdown:
             try:

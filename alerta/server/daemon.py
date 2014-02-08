@@ -8,7 +8,7 @@ from alerta.common.daemon import Daemon
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common import status_code, severity_code
-from alerta.common.amqp import Messaging, MessageHandler
+from alerta.common.amqp import MessageQueue, DirectConsumer
 from alerta.server.database import Mongo
 from alerta.common.graphite import Carbon, StatsD
 
@@ -32,7 +32,7 @@ class WorkerThread(threading.Thread):
         ServerMessage(self.mq).run()
 
 
-class ServerMessage(MessageHandler):
+class ServerMessage(DirectConsumer):
 
     def __init__(self, mq):
 
@@ -40,7 +40,7 @@ class ServerMessage(MessageHandler):
         self.statsd = StatsD()
         self.db = Mongo()       # mongo database
 
-        MessageHandler.__init__(self, self.mq.conn)
+        DirectConsumer.__init__(self, self.mq.conn)
 
     def on_message(self, body, message):
 
@@ -184,18 +184,18 @@ class AlertaDaemon(Daemon):
         self.db = Mongo()       # mongo database
         self.carbon = Carbon()  # carbon metrics
         self.statsd = StatsD()  # graphite metrics
-        self.mq = Messaging()
+        self.alert_queue = MessageQueue(CONF.inbound_queue)
 
         self.shuttingdown = False
 
     def run(self):
 
-        self.mq.connect()
+        self.alert_queue.connect()
 
         # Start worker threads
         LOG.debug('Starting %s worker threads...', CONF.server_threads)
         for i in range(CONF.server_threads):
-            w = WorkerThread(self.mq)
+            w = WorkerThread(self.alert_queue)
             try:
                 w.start()
             except Exception, e:
@@ -207,14 +207,14 @@ class AlertaDaemon(Daemon):
             try:
                 LOG.debug('Send heartbeat...')
                 heartbeat = Heartbeat(version=Version, timeout=CONF.loop_every)
-                self.mq.send(heartbeat)
+                self.alert_queue.send(heartbeat)
                 time.sleep(CONF.loop_every)
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
-                MessageHandler.should_stop = True
+                DirectConsumer.should_stop = True
 
         LOG.info('Shutdown request received...')
         w.join()
 
         LOG.info('Disconnecting from message broker...')
-        self.mq.disconnect()
+        self.alert_queue.disconnect()

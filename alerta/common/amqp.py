@@ -17,8 +17,7 @@ class MessageQueue(object):
 
     mq_opts = {
         'inbound_queue': 'alerts',
-        'outbound_queue': '/queue/logger',
-        'outbound_topic': '/topic/notify',
+        'outbound_topic': 'notify',
 
         'rabbit_host': 'localhost',
         'rabbit_port': 5672,
@@ -28,28 +27,25 @@ class MessageQueue(object):
         'rabbit_virtual_host': '/',
     }
 
-    def __init__(self, name, type='direct'):
+    def __init__(self, name):
 
         config.register_opts(MessageQueue.mq_opts)
 
         self.name = name
-        self.exchange = Exchange(name, type=type, durable=True)
-        self.queue = Queue(name, exchange=self.exchange, routing_key=name)
         self.conn = None
         self.connect()
 
     def connect(self):
 
+        LOG.critical('connecting to %s', self.name)
+
         self.conn = Connection('amqp://%s:%s@%s:%d/%s' % (CONF.rabbit_userid, CONF.rabbit_password,
                                CONF.rabbit_host, CONF.rabbit_port, CONF.rabbit_virtual_host))
         self.conn.connect()
-        self.producer = self.conn.Producer(exchange=self.exchange, serializer='json')
 
     def send(self, msg, timeout=None):
 
-        self.producer.declare()
-        self.producer.publish(json.dumps(msg.get_body(), cls=DateEncoder), exchange=self.exchange,
-                              routing_key=self.name, declare=[self.queue])
+        pass
 
     def disconnect(self):
 
@@ -58,6 +54,40 @@ class MessageQueue(object):
     def is_connected(self):
 
         return self.conn.connected
+
+
+class DirectPublisher(MessageQueue):
+
+    def __init__(self, name):
+
+        self.exchange = Exchange(name, type='direct', durable=True)
+        self.queue = Queue(name, exchange=self.exchange, routing_key=name)
+
+        MessageQueue.__init__(self, name)
+
+    def send(self, msg, timeout=None):
+
+        self.producer = self.conn.Producer(exchange=self.exchange, serializer='json')
+        self.producer.declare()
+        self.producer.publish(json.dumps(msg.get_body(), cls=DateEncoder), exchange=self.exchange,
+                              routing_key=self.name, declare=[self.queue])
+
+
+class FanoutPublisher(MessageQueue):
+
+    def __init__(self, name):
+
+        self.exchange = Exchange(name, type='fanout', durable=True)
+        self.queue = Queue(name, exchange=self.exchange, routing_key='')
+
+        MessageQueue.__init__(self, name)
+
+    def send(self, msg, timeout=None):
+
+        self.producer = self.conn.Producer(exchange=self.exchange, serializer='json')
+        self.producer.declare()
+        self.producer.publish(json.dumps(msg.get_body(), cls=DateEncoder), exchange=self.exchange,
+                              routing_key='', declare=[self.queue])
 
 
 class DirectConsumer(ConsumerMixin):

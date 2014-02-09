@@ -1,11 +1,9 @@
 
-import sys
-
 from flask import Flask
 
 from alerta.common import config
 from alerta.common import log as logging
-from alerta.common.amqp import MessageQueue
+from alerta.common.amqp import DirectPublisher
 from alerta.server.database import Mongo
 
 Version = '2.1.0'
@@ -20,7 +18,7 @@ app = Flask(__name__)
 app.config.from_object(__name__)
 db = Mongo()
 
-mq = MessageQueue(CONF.inbound_queue)
+mq = DirectPublisher(CONF.inbound_queue)
 mq.connect()
 
 import views

@@ -7,7 +7,7 @@ import datetime
 from alerta.common import config
 from alerta.common import log as logging
 from alerta.common.daemon import Daemon
-from alerta.common.amqp import Messaging, MessageHandler
+from alerta.common.amqp import MessageQueue, FanoutConsumer
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common.utils import DateEncoder
@@ -18,15 +18,15 @@ LOG = logging.getLogger(__name__)
 CONF = config.CONF
 
 
-class LoggerMessage(MessageHandler):
+class LoggerMessage(FanoutConsumer):
 
     def __init__(self, mq):
 
         self.mq = mq
 
-        MessageHandler.__init__(self)
+        FanoutConsumer.__init__(self, self.mq.conn)
 
-    def on_message(self, headers, body):
+    def on_message(self, body, message):
 
         LOG.debug("Received: %s", body)
         try:
@@ -66,9 +66,7 @@ class LoggerMessage(MessageHandler):
             except Exception, e:
                 LOG.error('%s : Could not parse elasticsearch reponse: %s', e)
 
-    def on_disconnected(self):
-
-        self.mq.reconnect()
+            message.ack()
 
 
 class LoggerDaemon(Daemon):
@@ -93,9 +91,8 @@ class LoggerDaemon(Daemon):
         self.running = True
 
         # Connect to message queue
-        self.mq = Messaging()
-        self.mq.connect(callback=LoggerMessage(self.mq))
-        self.mq.subscribe(destination=CONF.outbound_queue)
+        self.mq = MessageQueue(CONF.outbound_topic)
+        self.mq.connect()
 
         while not self.shuttingdown:
             try:

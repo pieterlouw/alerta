@@ -8,7 +8,7 @@ from alerta.common.daemon import Daemon
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common import status_code, severity_code
-from alerta.common.amqp import MessageQueue, DirectConsumer
+from alerta.common.amqp import DirectPublisher, DirectConsumer, FanoutPublisher
 from alerta.server.database import Mongo
 from alerta.common.graphite import Carbon, StatsD
 
@@ -20,27 +20,31 @@ CONF = config.CONF
 
 class WorkerThread(threading.Thread):
 
-    def __init__(self, mq):
+    def __init__(self, pubsub, topic):
 
         threading.Thread.__init__(self)
 
         LOG.debug('Initialising %s...', self.getName())
-        self.mq = mq
+        self.pubsub = pubsub
+        self.pubsub.connect()
+        self.topic = topic
+        self.topic.connect()
 
     def run(self):
 
-        ServerMessage(self.mq).run()
+        ServerMessage(self.pubsub, self.topic).run()
 
 
 class ServerMessage(DirectConsumer):
 
-    def __init__(self, mq):
+    def __init__(self, pubsub, topic):
 
-        self.mq = mq
+        self.pubsub = pubsub
+        self.topic = topic
         self.statsd = StatsD()
         self.db = Mongo()       # mongo database
 
-        DirectConsumer.__init__(self, self.mq.conn)
+        DirectConsumer.__init__(self, self.pubsub.conn)
 
     def on_message(self, body, message):
 
@@ -95,10 +99,9 @@ class ServerMessage(DirectConsumer):
                 duplicateAlert.status = incomingAlert.status
 
             if CONF.forward_duplicate:
-                # Forward alert to notify topic and logger queue
-                self.mq.send(duplicateAlert, CONF.outbound_queue)
-                self.mq.send(duplicateAlert, CONF.outbound_topic)
-                LOG.info('%s : Alert forwarded to %s and %s', duplicateAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
+                # Forward alert to notify topic
+                self.topic.send(duplicateAlert)
+                LOG.info('%s : Alert forwarded to %s and %s', duplicateAlert.get_id(), CONF.outbound_pubsub, CONF.outbound_topic)
 
             self.db.update_timer_metric(duplicateAlert.create_time, duplicateAlert.last_receive_time)
             message.ack()
@@ -125,10 +128,9 @@ class ServerMessage(DirectConsumer):
                 self.db.update_status(alert=correlatedAlert, status=incomingAlert.status)
                 correlatedAlert.status = incomingAlert.status
 
-            # Forward alert to notify topic and logger queue
-            self.mq.send(correlatedAlert, CONF.outbound_queue)
-            self.mq.send(correlatedAlert, CONF.outbound_topic)
-            LOG.info('%s : Alert forwarded to %s and %s', correlatedAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
+            # Forward alert to notify topic
+            self.topic.send(correlatedAlert)
+            LOG.info('%s : Alert forwarded to %s and %s', correlatedAlert.get_id(), CONF.outbound_pubsub, CONF.outbound_topic)
 
             self.db.update_timer_metric(correlatedAlert.create_time, correlatedAlert.receive_time)
             message.ack()
@@ -156,10 +158,9 @@ class ServerMessage(DirectConsumer):
 
             self.db.update_status(alert=incomingAlert, status=incomingAlert.status)
 
-            # Forward alert to notify topic and logger queue
-            self.mq.send(incomingAlert, CONF.outbound_queue)
-            self.mq.send(incomingAlert, CONF.outbound_topic)
-            LOG.info('%s : Alert forwarded to %s and %s', incomingAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
+            # Forward alert to notify topic
+            self.topic.send(incomingAlert)
+            LOG.info('%s : Alert forwarded to %s and %s', incomingAlert.get_id(), CONF.outbound_pubsub, CONF.outbound_topic)
 
             self.db.update_timer_metric(incomingAlert.create_time, incomingAlert.receive_time)
             message.ack()
@@ -172,7 +173,7 @@ class ServerMessage(DirectConsumer):
 class AlertaDaemon(Daemon):
 
     alerta_opts = {
-        'forward_duplicate': 'no',
+        'forward_duplicate': 'yes',
     }
 
     def __init__(self, prog, **kwargs):
@@ -184,18 +185,18 @@ class AlertaDaemon(Daemon):
         self.db = Mongo()       # mongo database
         self.carbon = Carbon()  # carbon metrics
         self.statsd = StatsD()  # graphite metrics
-        self.alert_queue = MessageQueue(CONF.inbound_queue)
+        self.pubsub = DirectPublisher(CONF.inbound_pubsub)
+        self.pubsub.connect()
+        self.topic = FanoutPublisher(CONF.outbound_topic)
 
         self.shuttingdown = False
 
     def run(self):
 
-        self.alert_queue.connect()
-
         # Start worker threads
         LOG.debug('Starting %s worker threads...', CONF.server_threads)
         for i in range(CONF.server_threads):
-            w = WorkerThread(self.alert_queue)
+            w = WorkerThread(self.pubsub, self.topic)
             try:
                 w.start()
             except Exception, e:
@@ -207,7 +208,7 @@ class AlertaDaemon(Daemon):
             try:
                 LOG.debug('Send heartbeat...')
                 heartbeat = Heartbeat(version=Version, timeout=CONF.loop_every)
-                self.alert_queue.send(heartbeat)
+                self.pubsub.send(heartbeat)
                 time.sleep(CONF.loop_every)
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
@@ -217,4 +218,4 @@ class AlertaDaemon(Daemon):
         w.join()
 
         LOG.info('Disconnecting from message broker...')
-        self.alert_queue.disconnect()
+        self.pubsub.disconnect()

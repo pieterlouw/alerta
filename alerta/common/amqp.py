@@ -116,8 +116,8 @@ class FanoutConsumer(ConsumerMixin):
 
     config.register_opts(MessageQueue.mq_opts)
 
-    exchange = Exchange(CONF.outbound_queue, 'fanout', exclusive=True)
-    queue = Queue(CONF.outbound_queue, exchange=exchange, routing_key=CONF.outbound_queue)
+    exchange = Exchange(CONF.outbound_topic, 'fanout', exclusive=True)
+    queue = Queue(CONF.outbound_topic, exchange=exchange, routing_key=CONF.outbound_topic)
 
     def __init__(self, connection):
 

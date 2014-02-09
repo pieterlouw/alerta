@@ -7,7 +7,7 @@ import datetime
 from alerta.common import config
 from alerta.common import log as logging
 from alerta.common.daemon import Daemon
-from alerta.common.amqp import MessageQueue, FanoutConsumer
+from alerta.common.amqp import DirectPublisher, FanoutConsumer
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common.utils import DateEncoder
@@ -20,11 +20,12 @@ CONF = config.CONF
 
 class LoggerMessage(FanoutConsumer):
 
-    def __init__(self, mq):
+    def __init__(self, pubsub, topic):
 
-        self.mq = mq
+        self.pubsub = pubsub
+        self.topic = topic
 
-        FanoutConsumer.__init__(self, self.mq.conn)
+        FanoutConsumer.__init__(self, self.pubsub.conn)
 
     def on_message(self, body, message):
 
@@ -91,8 +92,10 @@ class LoggerDaemon(Daemon):
         self.running = True
 
         # Connect to message queue
-        self.mq = MessageQueue(CONF.outbound_topic)
-        self.mq.connect()
+        self.pubsub = DirectPublisher(CONF.inbound_queue)
+        self.pubsub.connect()
+        self.topic = FanoutConsumer(CONF.outbound_topic)
+        LoggerMessage(self.pubsub, self.topic).run()
 
         while not self.shuttingdown:
             try:
@@ -101,7 +104,7 @@ class LoggerDaemon(Daemon):
 
                 LOG.debug('Send heartbeat...')
                 heartbeat = Heartbeat(version=Version)
-                self.mq.send(heartbeat)
+                self.topic.send(heartbeat)
 
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
@@ -110,4 +113,4 @@ class LoggerDaemon(Daemon):
         self.running = False
 
         LOG.info('Disconnecting from message broker...')
-        self.mq.disconnect()
+        self.topic.disconnect()

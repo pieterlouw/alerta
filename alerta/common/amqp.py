@@ -18,7 +18,9 @@ class Connection(object):
     amqp_opts = {
         'amqp_queue': 'alerts',
         'amqp_topic': 'notify',
-        'amqp_url': 'amqp://guest:guest@localhost:5672//',
+        'amqp_url': 'amqp://guest:guest@localhost:5672//',  # RabbitMQ
+        # 'amqp_url': 'mongodb://localhost:27017/kombu',    # MongoDB
+        # 'amqp_url': 'redis://localhost:6379/',            # Redis
     }
 
     def __init__(self):

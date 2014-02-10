@@ -110,8 +110,8 @@ class FanoutConsumer(ConsumerMixin):
 
         self.connection = connection
         self.channel = self.connection.channel()
-        self.exchange = Exchange(CONF.amqp_topic, 'fanout', channel=self.channel, exclusive=True)
-        self.queue = Queue(CONF.amqp_topic, exchange=self.exchange, routing_key='', channel=self.channel)
+        self.exchange = Exchange(CONF.amqp_topic, 'fanout', channel=self.channel, durable=True)
+        self.queue = Queue('', exchange=self.exchange, routing_key='', channel=self.channel, exclusive=True)
 
     def get_consumers(self, Consumer, channel):
 

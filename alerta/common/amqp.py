@@ -1,7 +1,7 @@
 
 import json
 
-from kombu import Connection, Exchange, Queue
+from kombu import BrokerConnection, Exchange, Queue, Producer, Consumer
 from kombu.mixins import ConsumerMixin
 # from kombu.utils.debug import setup_logging
 
@@ -13,93 +13,83 @@ LOG = logging.getLogger(__name__)
 CONF = config.CONF
 
 
-class MessageQueue(object):
+class Connection(object):
 
-    mq_opts = {
-        'inbound_queue': 'alerts',
-        'outbound_topic': 'notify',
-
-        'rabbit_host': 'localhost',
-        'rabbit_port': 5672,
-        'rabbit_use_ssl': False,
-        'rabbit_userid': 'guest',
-        'rabbit_password': 'guest',
-        'rabbit_virtual_host': '/',
+    amqp_opts = {
+        'amqp_queue': 'alerts',
+        'amqp_topic': 'notify',
+        'amqp_url': 'amqp://guest:guest@localhost:5672//',
     }
 
-    def __init__(self, name):
+    def __init__(self):
 
-        config.register_opts(MessageQueue.mq_opts)
+        config.register_opts(Connection.amqp_opts)
 
-        self.name = name
-        self.conn = None
+        self.connection = None
+        self.channel = None
         self.connect()
 
     def connect(self):
 
-        LOG.critical('connecting to %s', self.name)
-
-        self.conn = Connection('amqp://%s:%s@%s:%d/%s' % (CONF.rabbit_userid, CONF.rabbit_password,
-                               CONF.rabbit_host, CONF.rabbit_port, CONF.rabbit_virtual_host))
-        self.conn.connect()
-
-    def send(self, msg, timeout=None):
-
-        pass
+        self.connection = BrokerConnection(CONF.amqp_url)
+        self.connection.connect()
+        self.channel = self.connection.channel()
 
     def disconnect(self):
 
-        return self.conn.release()
+        return self.connection.release()
 
     def is_connected(self):
 
-        return self.conn.connected
+        return self.connection.connected
 
 
-class DirectPublisher(MessageQueue):
+class DirectPublisher(object):
 
-    def __init__(self, name):
+    def __init__(self, channel, name=None):
 
-        self.exchange = Exchange(name, type='direct', durable=True)
-        self.queue = Queue(name, exchange=self.exchange, routing_key=name)
+        config.register_opts(Connection.amqp_opts)
 
-        MessageQueue.__init__(self, name)
+        self.channel = channel
+        self.exchange_name = name or CONF.amqp_queue
 
-    def send(self, msg, timeout=None):
+        self.exchange = Exchange(name=self.exchange_name, type='direct', channel=channel, durable=True)
+        self.producer = Producer(exchange=self.exchange, channel=self.channel, serializer='json')
 
-        self.producer = self.conn.Producer(exchange=self.exchange, serializer='json')
-        self.producer.declare()
+    def send(self, msg):
+
         self.producer.publish(json.dumps(msg.get_body(), cls=DateEncoder), exchange=self.exchange,
-                              routing_key=self.name, declare=[self.queue])
+                              serializer='json', declare=[self.exchange], routing_key=self.exchange_name)
 
 
-class FanoutPublisher(MessageQueue):
+class FanoutPublisher(object):
 
-    def __init__(self, name):
+    def __init__(self, channel, name=None):
 
-        self.exchange = Exchange(name, type='fanout', durable=True)
-        self.queue = Queue(name, exchange=self.exchange, routing_key='')
+        config.register_opts(Connection.amqp_opts)
 
-        MessageQueue.__init__(self, name)
+        self.channel = channel
+        self.exchange_name = name or CONF.amqp_topic
 
-    def send(self, msg, timeout=None):
+        self.exchange = Exchange(name=self.exchange_name, type='fanout', channel=channel)
+        self.producer = Producer(exchange=self.exchange, channel=self.channel, serializer='json')
 
-        self.producer = self.conn.Producer(exchange=self.exchange, serializer='json')
-        self.producer.declare()
+    def send(self, msg):
+
         self.producer.publish(json.dumps(msg.get_body(), cls=DateEncoder), exchange=self.exchange,
-                              routing_key='', declare=[self.queue])
+                              serializer='json', declare=[self.exchange])
 
 
 class DirectConsumer(ConsumerMixin):
 
-    config.register_opts(MessageQueue.mq_opts)
-
-    exchange = Exchange(CONF.inbound_queue, 'direct', durable=True)
-    queue = Queue(CONF.inbound_queue, exchange=exchange, routing_key=CONF.inbound_queue)
+    config.register_opts(Connection.amqp_opts)
 
     def __init__(self, connection):
 
         self.connection = connection
+        self.channel = self.connection.channel()
+        self.exchange = Exchange(CONF.amqp_queue, 'direct', channel=self.channel, durable=True)
+        self.queue = Queue(CONF.amqp_queue, exchange=self.exchange, routing_key=CONF.amqp_queue, channel=self.channel)
 
     def get_consumers(self, Consumer, channel):
 
@@ -108,20 +98,20 @@ class DirectConsumer(ConsumerMixin):
         ]
 
     def on_message(self, body, message):
-        LOG.debug('Received queue message: {0!r}'.format(body))
+        print('Received queue message: {0!r}'.format(body))
         message.ack()
 
 
 class FanoutConsumer(ConsumerMixin):
 
-    config.register_opts(MessageQueue.mq_opts)
-
-    exchange = Exchange(CONF.outbound_topic, 'fanout', exclusive=True)
-    queue = Queue(CONF.outbound_topic, exchange=exchange, routing_key=CONF.outbound_topic)
+    config.register_opts(Connection.amqp_opts)
 
     def __init__(self, connection):
 
         self.connection = connection
+        self.channel = self.connection.channel()
+        self.exchange = Exchange(CONF.amqp_topic, 'fanout', channel=self.channel, exclusive=True)
+        self.queue = Queue(CONF.amqp_topic, exchange=self.exchange, routing_key='', channel=self.channel)
 
     def get_consumers(self, Consumer, channel):
 
@@ -130,5 +120,5 @@ class FanoutConsumer(ConsumerMixin):
         ]
 
     def on_message(self, body, message):
-        LOG.debug('Received topic message: {0!r}'.format(body))
+        print('Received topic message: {0!r}'.format(body))
         message.ack()

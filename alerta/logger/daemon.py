@@ -1,5 +1,4 @@
 
-import time
 import json
 import urllib2
 import datetime
@@ -7,9 +6,8 @@ import datetime
 from alerta.common import config
 from alerta.common import log as logging
 from alerta.common.daemon import Daemon
-from alerta.common.amqp import DirectPublisher, FanoutConsumer
+from alerta.common.amqp import Connection, FanoutConsumer
 from alerta.common.alert import Alert
-from alerta.common.heartbeat import Heartbeat
 from alerta.common.utils import DateEncoder
 
 Version = '2.2.0'
@@ -20,13 +18,6 @@ CONF = config.CONF
 
 class LoggerMessage(FanoutConsumer):
 
-    def __init__(self, pubsub, topic):
-
-        self.pubsub = pubsub
-        self.topic = topic
-
-        FanoutConsumer.__init__(self, self.pubsub.conn)
-
     def on_message(self, body, message):
 
         LOG.debug("Received: %s", body)
@@ -35,7 +26,7 @@ class LoggerMessage(FanoutConsumer):
         except ValueError:
             return
 
-        if logAlert:
+        if logAlert and 'last_receive_time' in logAlert:
             LOG.info('%s : [%s] %s', logAlert.last_receive_id, logAlert.status, logAlert.summary)
 
             source_host, _, source_path = logAlert.resource.partition(':')
@@ -89,28 +80,9 @@ class LoggerDaemon(Daemon):
 
     def run(self):
 
-        self.running = True
-
-        # Connect to message queue
-        self.pubsub = DirectPublisher(CONF.inbound_queue)
-        self.pubsub.connect()
-        self.topic = FanoutConsumer(CONF.outbound_topic)
-        LoggerMessage(self.pubsub, self.topic).run()
-
-        while not self.shuttingdown:
-            try:
-                LOG.debug('Waiting for log messages...')
-                time.sleep(CONF.loop_every)
-
-                LOG.debug('Send heartbeat...')
-                heartbeat = Heartbeat(version=Version)
-                self.topic.send(heartbeat)
-
-            except (KeyboardInterrupt, SystemExit):
-                self.shuttingdown = True
-
-        LOG.info('Shutdown request received...')
-        self.running = False
+        mq = Connection()
+        logger = LoggerMessage(mq.connection)
+        logger.run()
 
         LOG.info('Disconnecting from message broker...')
-        self.topic.disconnect()
+        self.mq.disconnect()

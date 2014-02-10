@@ -4,7 +4,7 @@ import time
 from functools import wraps
 from flask import request, current_app, render_template
 
-from alerta.api.v2 import app, db, mq
+from alerta.api.v2 import app, db, pub
 from alerta.api.v2.switch import Switch
 from alerta.common import config
 from alerta.common import log as logging
@@ -152,7 +152,7 @@ def create_alert():
         return jsonify(response={"status": "error", "message": str(e)})
 
     LOG.debug('New alert %s', newAlert)
-    mq.send(newAlert)
+    pub.send(newAlert)
 
     if newAlert:
         return jsonify(response={"status": "ok", "id": newAlert.get_id()})
@@ -183,8 +183,8 @@ def modify_alert(alertid):
                 modifiedAlert = db.update_status(alertid=alertid, status=request.json['status'])
 
                 # Forward alert to notify topic and logger queue
-                mq.send(modifiedAlert, CONF.outbound_queue)
-                mq.send(modifiedAlert, CONF.outbound_topic)
+                pub.send(modifiedAlert, CONF.outbound_queue)
+                pub.send(modifiedAlert, CONF.outbound_topic)
                 LOG.info('%s : Alert forwarded to %s and %s', modifiedAlert.get_id(), CONF.outbound_queue, CONF.outbound_topic)
 
         else:
@@ -338,7 +338,7 @@ def create_heartbeat():
         return jsonify(response={"status": "error", "message": str(e)})
 
     LOG.debug('New heartbeat %s', heartbeat)
-    mq.send(heartbeat)
+    pub.send(heartbeat)
 
     if heartbeat:
         return jsonify(response={"status": "ok", "id": heartbeat.get_id()})

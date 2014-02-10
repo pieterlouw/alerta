@@ -8,7 +8,7 @@ from alerta.common.daemon import Daemon
 from alerta.common.alert import Alert
 from alerta.common.heartbeat import Heartbeat
 from alerta.common import status_code, severity_code
-from alerta.common.amqp import DirectPublisher, DirectConsumer, FanoutPublisher
+from alerta.common.amqp import Connection, DirectPublisher, DirectConsumer, FanoutPublisher
 from alerta.server.database import Mongo
 from alerta.common.graphite import Carbon, StatsD
 
@@ -20,31 +20,28 @@ CONF = config.CONF
 
 class WorkerThread(threading.Thread):
 
-    def __init__(self, pubsub, topic):
+    def __init__(self, connection):
 
         threading.Thread.__init__(self)
 
         LOG.debug('Initialising %s...', self.getName())
-        self.pubsub = pubsub
-        self.pubsub.connect()
-        self.topic = topic
-        self.topic.connect()
+        self.connection = connection
 
     def run(self):
 
-        ServerMessage(self.pubsub, self.topic).run()
+        ServerMessage(self.connection).run()
 
 
 class ServerMessage(DirectConsumer):
 
-    def __init__(self, pubsub, topic):
+    def __init__(self, connection):
 
-        self.pubsub = pubsub
-        self.topic = topic
         self.statsd = StatsD()
         self.db = Mongo()       # mongo database
 
-        DirectConsumer.__init__(self, self.pubsub.conn)
+        self.topic = FanoutPublisher(connection)
+
+        DirectConsumer.__init__(self, connection)
 
     def on_message(self, body, message):
 
@@ -185,9 +182,8 @@ class AlertaDaemon(Daemon):
         self.db = Mongo()       # mongo database
         self.carbon = Carbon()  # carbon metrics
         self.statsd = StatsD()  # graphite metrics
-        self.pubsub = DirectPublisher(CONF.inbound_pubsub)
-        self.pubsub.connect()
-        self.topic = FanoutPublisher(CONF.outbound_topic)
+        self.mq = Connection()
+        self.pub = DirectPublisher(self.mq.connection)
 
         self.shuttingdown = False
 
@@ -196,7 +192,7 @@ class AlertaDaemon(Daemon):
         # Start worker threads
         LOG.debug('Starting %s worker threads...', CONF.server_threads)
         for i in range(CONF.server_threads):
-            w = WorkerThread(self.pubsub, self.topic)
+            w = WorkerThread(self.mq.connection)
             try:
                 w.start()
             except Exception, e:
@@ -208,7 +204,7 @@ class AlertaDaemon(Daemon):
             try:
                 LOG.debug('Send heartbeat...')
                 heartbeat = Heartbeat(version=Version, timeout=CONF.loop_every)
-                self.pubsub.send(heartbeat)
+                self.pub.send(heartbeat)
                 time.sleep(CONF.loop_every)
             except (KeyboardInterrupt, SystemExit):
                 self.shuttingdown = True
@@ -218,4 +214,4 @@ class AlertaDaemon(Daemon):
         w.join()
 
         LOG.info('Disconnecting from message broker...')
-        self.pubsub.disconnect()
+        self.mq.disconnect()

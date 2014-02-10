@@ -53,7 +53,7 @@ class DirectPublisher(object):
         self.channel = channel
         self.exchange_name = name or CONF.amqp_queue
 
-        self.exchange = Exchange(name=self.exchange_name, type='direct', channel=channel, durable=True)
+        self.exchange = Exchange(name=self.exchange_name, type='direct', channel=self.channel, durable=True)
         self.producer = Producer(exchange=self.exchange, channel=self.channel, serializer='json')
 
     def send(self, msg):
@@ -71,7 +71,7 @@ class FanoutPublisher(object):
         self.channel = channel
         self.exchange_name = name or CONF.amqp_topic
 
-        self.exchange = Exchange(name=self.exchange_name, type='fanout', channel=channel)
+        self.exchange = Exchange(name=self.exchange_name, type='fanout', channel=self.channel)
         self.producer = Producer(exchange=self.exchange, channel=self.channel, serializer='json')
 
     def send(self, msg):
@@ -98,7 +98,7 @@ class DirectConsumer(ConsumerMixin):
         ]
 
     def on_message(self, body, message):
-        print('Received queue message: {0!r}'.format(body))
+        LOG.debug('Received queue message: {0!r}'.format(body))
         message.ack()
 
 
@@ -120,5 +120,5 @@ class FanoutConsumer(ConsumerMixin):
         ]
 
     def on_message(self, body, message):
-        print('Received topic message: {0!r}'.format(body))
+        LOG.debug('Received topic message: {0!r}'.format(body))
         message.ack()

@@ -7,6 +7,7 @@ import hashlib
 import bcrypt
 
 from uuid import uuid4
+from six import string_types
 from pymongo import MongoClient, ASCENDING, TEXT, ReturnDocument
 
 try:
@@ -106,6 +107,10 @@ class Mongo(object):
 
         return self._db
 
+    def get_info(self):
+
+        return self._db.name
+
     def get_version(self):
 
         return self._db.client.server_info()['version']
@@ -125,7 +130,8 @@ class Mongo(object):
                 {
                     "event": {'$ne': alert.event},
                     "correlate": alert.event
-                }]
+                }],
+            "customer": alert.customer
         }
 
         return self._db.alerts.find_one(query, projection={"severity": 1, "_id": 0})['severity']
@@ -144,7 +150,8 @@ class Mongo(object):
                 {
                     "correlate": alert.event,
                 }
-            ]
+            ],
+            "customer": alert.customer
         }
 
         return self._db.alerts.find_one(query, projection={"status": 1, "_id": 0})['status']
@@ -184,6 +191,7 @@ class Mongo(object):
                     create_time=response['createTime'],
                     timeout=response['timeout'],
                     raw_data=response['rawData'],
+                    customer=response.get('customer', None),
                     duplicate_count=response['duplicateCount'],
                     repeat=response['repeat'],
                     previous_severity=response['previousSeverity'],
@@ -203,6 +211,7 @@ class Mongo(object):
                 "resource": 1,
                 "event": 1,
                 "environment": 1,
+                "customer": 1,
                 "service": 1,
                 "group": 1,
                 "tags": 1,
@@ -240,7 +249,8 @@ class Mongo(object):
                         "attributes": response['attributes'],
                         "origin": response['origin'],
                         "type": response['type'],
-                        "updateTime": response['history']['updateTime']
+                        "updateTime": response['history']['updateTime'],
+                        "customer": response.get('customer', None)
                     }
                 )
             elif 'status' in response['history']:
@@ -258,7 +268,8 @@ class Mongo(object):
                         "attributes": response['attributes'],
                         "origin": response['origin'],
                         "type": response['type'],
-                        "updateTime": response['history']['updateTime']
+                        "updateTime": response['history']['updateTime'],
+                        "customer": response.get('customer', None)
                     }
                 )
         return history
@@ -269,7 +280,8 @@ class Mongo(object):
             "environment": alert.environment,
             "resource": alert.resource,
             "event": alert.event,
-            "severity": alert.severity
+            "severity": alert.severity,
+            "customer": alert.customer
         }
 
         return bool(self._db.alerts.find_one(query))
@@ -287,7 +299,8 @@ class Mongo(object):
                 {
                     "event": {'$ne': alert.event},
                     "correlate": alert.event
-                }]
+                }],
+            "customer": alert.customer
         }
 
         return bool(self._db.alerts.find_one(query))
@@ -302,13 +315,14 @@ class Mongo(object):
         if alert.status != status_code.UNKNOWN and alert.status != previous_status:
             status = alert.status
         else:
-            status = previous_status
+            status = severity_code.status_from_severity(alert.severity, alert.severity, previous_status)
 
         query = {
             "environment": alert.environment,
             "resource": alert.resource,
             "event": alert.event,
-            "severity": alert.severity
+            "severity": alert.severity,
+            "customer": alert.customer
         }
 
         now = datetime.datetime.utcnow()
@@ -362,6 +376,7 @@ class Mongo(object):
             create_time=response['createTime'],
             timeout=response['timeout'],
             raw_data=response['rawData'],
+            customer=response.get('customer', None),
             duplicate_count=response['duplicateCount'],
             repeat=response['repeat'],
             previous_severity=response['previousSeverity'],
@@ -397,7 +412,8 @@ class Mongo(object):
                 {
                     "event": {'$ne': alert.event},
                     "correlate": alert.event
-                }]
+                }],
+            "customer": alert.customer
         }
 
         now = datetime.datetime.utcnow()
@@ -468,6 +484,7 @@ class Mongo(object):
             create_time=response['createTime'],
             timeout=response['timeout'],
             raw_data=response['rawData'],
+            customer=response.get('customer', None),
             duplicate_count=response['duplicateCount'],
             repeat=response['repeat'],
             previous_severity=response['previousSeverity'],
@@ -523,6 +540,7 @@ class Mongo(object):
             "createTime": alert.create_time,
             "timeout": alert.timeout,
             "rawData": alert.raw_data,
+            "customer": alert.customer,
             "duplicateCount": 0,
             "repeat": False,
             "previousSeverity": severity_code.UNKNOWN,
@@ -559,6 +577,7 @@ class Mongo(object):
             create_time=alert['createTime'],
             timeout=alert['timeout'],
             raw_data=alert['rawData'],
+            customer=alert['customer'],
             duplicate_count=alert['duplicateCount'],
             repeat=alert['repeat'],
             previous_severity=alert['previousSeverity'],
@@ -599,6 +618,7 @@ class Mongo(object):
             create_time=response['createTime'],
             timeout=response['timeout'],
             raw_data=response['rawData'],
+            customer=response.get('customer', None),
             duplicate_count=response['duplicateCount'],
             repeat=response['repeat'],
             previous_severity=response['previousSeverity'],
@@ -659,6 +679,7 @@ class Mongo(object):
             create_time=response['createTime'],
             timeout=response['timeout'],
             raw_data=response['rawData'],
+            customer=response.get('customer', None),
             duplicate_count=response['duplicateCount'],
             repeat=response['repeat'],
             previous_severity=response['previousSeverity'],
@@ -956,7 +977,8 @@ class Mongo(object):
                     event_type=response['type'],
                     create_time=response['createTime'],
                     timeout=response['timeout'],
-                    receive_time=response['receiveTime']
+                    receive_time=response['receiveTime'],
+                    customer=response.get('customer', None)
                 )
             )
         return heartbeats
@@ -972,7 +994,8 @@ class Mongo(object):
                 "type": heartbeat.event_type,
                 "createTime": heartbeat.create_time,
                 "timeout": heartbeat.timeout,
-                "receiveTime": now
+                "receiveTime": now,
+                "customer": heartbeat.customer
             }
         }
 
@@ -995,7 +1018,8 @@ class Mongo(object):
                 event_type=response['type'],
                 create_time=response['createTime'],
                 timeout=response['timeout'],
-                receive_time=response['receiveTime']
+                receive_time=response['receiveTime'],
+                customer=response.get('customer', None)
             )
         else:
             update = update['$set']
@@ -1009,7 +1033,8 @@ class Mongo(object):
                 event_type=update['type'],
                 create_time=update['createTime'],
                 timeout=update['timeout'],
-                receive_time=update['receiveTime']
+                receive_time=update['receiveTime'],
+                customer=update.get('customer', None)
             )
 
     def get_heartbeat(self, id):
@@ -1030,7 +1055,8 @@ class Mongo(object):
             event_type=response['type'],
             create_time=response['createTime'],
             timeout=response['timeout'],
-            receive_time=response['receiveTime']
+            receive_time=response['receiveTime'],
+            customer=response.get('customer', None)
         )
 
     def delete_heartbeat(self, id):
@@ -1055,22 +1081,22 @@ class Mongo(object):
             "text": user['text']
         }
 
-    def get_users(self, query=None):
+    def get_users(self, query=None, password=False):
 
         users = list()
 
         for user in self._db.users.find(query):
-            users.append(
-                {
-                    "id": user['_id'],
-                    "name": user['name'],
-                    "login": user.get('login', None) or user.get('email', None),  # for backwards compatibility
-                    "password": user.get('password', None),
-                    "createTime": user['createTime'],
-                    "provider": user['provider'],
-                    "text": user.get('text', "")
-                }
-            )
+            u = {
+                "id": user['_id'],
+                "name": user['name'],
+                "login": user.get('login', None) or user.get('email', None),  # for backwards compatibility
+                "createTime": user['createTime'],
+                "provider": user['provider'],
+                "text": user.get('text', "")
+            }
+            if password:
+                u['password'] = user.get('password', None)
+            users.append(u)
         return users
 
     def is_user_valid(self, id=None, name=None, login=None):
@@ -1082,7 +1108,36 @@ class Mongo(object):
         if login:
             return bool(self._db.users.find_one({"login": login}))
 
-    def save_user(self, id, name, login, password=None, provider="", text=""):
+
+    def update_user(self, id, name=None, login=None, password=None, provider=None, text=None, email_verified=None):
+
+        user = self._db.users.find_one({"_id": id})
+
+        if not user:
+            return
+
+        data = {}
+        if name:
+            data['name'] = name
+        if login:
+            data['login'] = login
+        if password:
+            data['password'] = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        if provider:
+            data['provider'] = provider
+        if text:
+            data['text'] = text
+        if email_verified:
+            data['email_verified'] = email_verified
+
+        response = self._db.users.update_one({"_id": id}, {'$set': data})
+
+        if response.matched_count > 0:
+            return id
+        else:
+            return 
+
+    def save_user(self, id, name, login, password=None, provider="", text="", email_verified=False):
 
         if self.is_user_valid(login=login):
             return
@@ -1093,7 +1148,8 @@ class Mongo(object):
             "login": login,
             "createTime": datetime.datetime.utcnow(),
             "provider": provider,
-            "text": text
+            "text": text,
+            "email_verified": email_verified
         }
 
         if password:
@@ -1101,19 +1157,101 @@ class Mongo(object):
 
         return self._db.users.insert_one(data).inserted_id
 
+    def reset_user_password(self, login, password):
+
+        if not self.is_user_valid(login=login):
+            return False
+
+        self._db.users.update_one(
+            {
+                "login": login
+            },
+            {
+                '$set': {"password": bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')}
+            },
+            upsert=True
+        )
+        return True
+
+    def set_user_hash(self, login, hash):
+
+        self._db.users.find_one_and_update(
+            {'login': login},
+            update={
+                '$set': {'hash': hash, 'updateTime': datetime.datetime.utcnow()}
+            },
+            upsert=False,
+        )
+
+    def is_hash_valid(self, hash):
+
+        user = self._db.users.find_one({"hash": hash})
+        if user:
+            return user['login']
+
+    def validate_user(self, login):
+
+        self._db.users.update_one(
+            {"login": login},
+            update={
+                '$set': {'email_verified': True, "updateTime": datetime.datetime.utcnow()}
+            },
+            upsert=False
+        )
+
+    def is_email_verified(self, login):
+
+        return self._db.users.find_one({'login': login}, projection={"email_verified": 1, "_id": 0}).get('email_verified', False)
+
     def delete_user(self, id):
 
         response = self._db.users.delete_one({"_id": id})
 
         return True if response.deleted_count == 1 else False
 
-    def get_metrics(self):
+    def create_customer(self, customer, match):
 
-        metrics = list()
+        if self.get_customer_by_match(match):
+            return
 
-        for stat in self._db.metrics.find({}, {"_id": 0}):
-            metrics.append(stat)
-        return metrics
+        data = {
+            "_id": str(uuid4()),
+            "customer": customer,
+            "match": match
+        }
+        return self._db.customers.insert_one(data).inserted_id
+
+    def get_customer_by_match(self, matches):
+
+        if isinstance(matches, string_types):
+            matches = [matches]
+
+        def find_customer(match):
+            response = self._db.customers.find_one({"match": match}, projection={"customer": 1, "_id": 0})
+            if response:
+                return response['customer']
+
+        results = [find_customer(m) for m in matches]
+        return next((r for r in results if r is not None), None)
+
+    def get_customers(self, query=None):
+
+        responses = self._db.customers.find(query)
+        customers = list()
+        for response in responses:
+            customers.append(
+                {
+                    "id": response["_id"],
+                    "customer": response["customer"],
+                    "match": response.get("match", None) or response["reference"]
+                }
+            )
+        return customers
+
+    def delete_customer(self, customer):
+
+        response = self._db.customers.delete_one({"customer": customer})
+        return True if response.deleted_count == 1 else False
 
     def get_keys(self, query=None):
 
@@ -1128,7 +1266,8 @@ class Mongo(object):
                     "text": response["text"],
                     "expireTime": response["expireTime"],
                     "count": response["count"],
-                    "lastUsedTime": response["lastUsedTime"]
+                    "lastUsedTime": response["lastUsedTime"],
+                    "customer": response.get("customer", None)
                 }
             )
 
@@ -1137,16 +1276,17 @@ class Mongo(object):
     def is_key_valid(self, key):
 
         key_info = self._db.keys.find_one({"key": key})
-
         if key_info:
             if key_info['expireTime'] > datetime.datetime.utcnow():
-                return key_info.get("type", "read-write")
+                if 'type' not in key_info:
+                    key_info['type'] = "read-write"
+                return key_info
             else:
                 return None
         else:
             return None
 
-    def create_key(self, user, type='read-only', text=None):
+    def create_key(self, user, type='read-only', customer=None, text=None):
 
         try:
             random = str(os.urandom(32)).encode('utf-8')  # python 3
@@ -1162,7 +1302,8 @@ class Mongo(object):
             "text": text,
             "expireTime": datetime.datetime.utcnow() + datetime.timedelta(days=app.config.get('API_KEY_EXPIRE_DAYS', 30)),
             "count": 0,
-            "lastUsedTime": None
+            "lastUsedTime": None,
+            "customer": customer
         }
 
         response = self._db.keys.insert_one(data)
@@ -1187,8 +1328,15 @@ class Mongo(object):
     def delete_key(self, key):
 
         response = self._db.keys.delete_one({"key": key})
-
         return True if response.deleted_count == 1 else False
+
+    def get_metrics(self):
+
+        metrics = list()
+
+        for stat in self._db.metrics.find({}, {"_id": 0}):
+            metrics.append(stat)
+        return metrics
 
     def disconnect(self):
 

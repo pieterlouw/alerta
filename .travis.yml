@@ -2,6 +2,7 @@ language: python
 python:
   - "2.7"
   - "3.4"
+  - "3.5"
 
 services: mongodb
 
@@ -13,5 +14,5 @@ install:
   - "pip install -r requirements.txt"
 
 # command to run tests
-script: nosetests tests/test_alerts.py tests/test_auth.py tests/test_heartbeats.py
+script: nosetests tests/test_alerts.py tests/test_auth.py tests/test_heartbeats.py tests/test_metrics.py
 

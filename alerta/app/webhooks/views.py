@@ -1,12 +1,14 @@
 import json
 import datetime
 
+from copy import copy
 from flask import request
 from flask.ext.cors import cross_origin
+from dateutil.parser import parse as parse_date
 
 from alerta.app import app, db
 from alerta.alert import Alert
-from alerta.app.utils import jsonify, jsonp, process_alert
+from alerta.app.utils import absolute_url, jsonify, jsonp, process_alert
 from alerta.app.metrics import Timer
 from alerta.plugins import RejectException
 
@@ -56,7 +58,7 @@ def parse_notification(notification):
 
         return Alert(
             resource='%s:%s' % (alarm['Trigger']['Dimensions'][0]['name'], alarm['Trigger']['Dimensions'][0]['value']),
-            event=alarm['Trigger']['MetricName'],
+            event=alarm['AlarmName'],
             environment='Production',
             severity=cw_state_to_severity(alarm['NewStateValue']),
             service=[alarm['AWSAccountId']],
@@ -100,8 +102,8 @@ def cloudwatch():
 
     if alert:
         body = alert.get_body()
-        body['href'] = "%s/%s" % (request.base_url, alert.id)
-        return jsonify(status="ok", id=alert.id, alert=body), 201, {'Location': '%s/%s' % (request.base_url, alert.id)}
+        body['href'] = absolute_url('/alert/' + alert.id)
+        return jsonify(status="ok", id=alert.id, alert=body), 201, {'Location': body['href']}
     else:
         return jsonify(status="error", message="insert or update of cloudwatch alarm failed"), 500
 
@@ -181,8 +183,8 @@ def pingdom():
 
     if alert:
         body = alert.get_body()
-        body['href'] = "%s/%s" % (request.base_url, alert.id)
-        return jsonify(status="ok", id=alert.id, alert=body), 201, {'Location': '%s/%s' % (request.base_url, alert.id)}
+        body['href'] = absolute_url('/alert/' + alert.id)
+        return jsonify(status="ok", id=alert.id, alert=body), 201, {'Location': body['href']}
     else:
         return jsonify(status="error", message="insert or update of pingdom check failed"), 500
 
@@ -268,3 +270,81 @@ def pagerduty():
         return jsonify(status="ok"), 200
     else:
         return jsonify(status="error", message="update PagerDuty incident status failed"), 500
+
+
+def parse_prometheus(status, alert):
+
+    labels = copy(alert['labels'])
+    annotations = copy(alert['annotations'])
+
+    starts_at = parse_date(alert['startsAt'])
+    if alert['endsAt'] == '0001-01-01T00:00:00Z':
+        ends_at = None
+    else:
+        ends_at = parse_date(alert['endsAt'])
+
+    if status == 'firing':
+        severity = labels.pop('severity', 'warning')
+        create_time = starts_at
+    elif status == 'resolved':
+        severity = 'normal'
+        create_time = ends_at
+    else:
+        severity = 'unknown'
+        create_time = ends_at or starts_at
+
+    summary = annotations.pop('summary', None)
+    description = annotations.pop('description', None)
+    text = description or summary or '%s: %s on %s' % (labels['job'], labels['alertname'], labels['instance'])
+
+    if 'generatorURL' in alert:
+        annotations['moreInfo'] = '<a href="%s" target="_blank">Prometheus Graph</a>' % alert['generatorURL']
+
+    return Alert(
+        resource=labels.pop('exported_instance', None) or labels.pop('instance'),
+        event=labels.pop('alertname'),
+        environment=labels.pop('environment', 'Production'),
+        severity=severity,
+        correlate=labels.pop('correlate').split(',') if 'correlate' in labels else None,
+        service=labels.pop('service', '').split(','),
+        group=labels.pop('group', None),
+        value=labels.pop('value', None),
+        text=text,
+        customer=labels.pop('customer', None),
+        tags=["%s=%s" % t for t in labels.items()],
+        attributes=annotations,
+        origin='prometheus/' + labels.get('job', '-'),
+        event_type='prometheusAlert',
+        create_time=create_time,
+        raw_data=alert
+    )
+
+
+@app.route('/webhooks/prometheus', methods=['OPTIONS', 'POST'])
+@cross_origin()
+def prometheus():
+
+    if request.json and 'alerts' in request.json:
+        hook_started = webhook_timer.start_timer()
+        status = request.json['status']
+        for alert in request.json['alerts']:
+            try:
+                incomingAlert = parse_prometheus(status, alert)
+            except ValueError as e:
+                webhook_timer.stop_timer(hook_started)
+                return jsonify(status="error", message=str(e)), 400
+
+            try:
+                process_alert(incomingAlert)
+            except RejectException as e:
+                webhook_timer.stop_timer(hook_started)
+                return jsonify(status="error", message=str(e)), 403
+            except Exception as e:
+                webhook_timer.stop_timer(hook_started)
+                return jsonify(status="error", message=str(e)), 500
+
+        webhook_timer.stop_timer(hook_started)
+    else:
+        return jsonify(status="error", message="no alerts in Prometheus notification payload"), 400
+
+    return jsonify(status="ok"), 200

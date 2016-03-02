@@ -5,7 +5,7 @@ import setuptools
 with open('alerta/version.py') as f:
     exec(f.read())
 
-with open('README.rst') as f:
+with open('README.md') as f:
     readme = f.read()
 
 setuptools.setup(
@@ -20,7 +20,7 @@ setuptools.setup(
     author_email='nick.satterly@theguardian.com',
     packages=setuptools.find_packages(exclude=['bin', 'tests']),
     install_requires=[
-        'alerta',
+        'alerta>=4.6.0',
         'Flask',
         'Flask-Cors',
         'pymongo>=3.0',
@@ -28,10 +28,9 @@ setuptools.setup(
         'boto',
         'argparse',
         'requests',
-        'requests-oauthlib',
+        'python-dateutil',
         'pytz',
         'PyJWT',
-        'cffi',
         'bcrypt'
     ],
     include_package_data=True,
@@ -58,7 +57,7 @@ setuptools.setup(
         'Intended Audience :: System Administrators',
         'Intended Audience :: Telecommunications Industry',
         'License :: OSI Approved :: Apache Software License',
-        'Programming Language :: Python :: 2.6',
+        'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 2.7',
         'Topic :: System :: Monitoring',
     ],

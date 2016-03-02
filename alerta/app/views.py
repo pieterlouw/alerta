@@ -1,14 +1,13 @@
 import datetime
 
-from collections import defaultdict
 from flask import g, request, render_template
 from flask.ext.cors import cross_origin
 from uuid import uuid4
 
 from alerta.app import app, db
 from alerta.app.switch import Switch
-from alerta.app.auth import auth_required
-from alerta.app.utils import jsonify, jsonp, parse_fields, process_alert
+from alerta.app.auth import auth_required, admin_required
+from alerta.app.utils import absolute_url, jsonify, jsonp, parse_fields, process_alert
 from alerta.app.metrics import Timer
 from alerta.alert import Alert
 from alerta.heartbeat import Heartbeat
@@ -38,6 +37,7 @@ def test():
         args=request.args,
         app_root=app.root_path,
     )
+
 
 @app.route('/')
 def index():
@@ -96,7 +96,7 @@ def get_alerts():
 
         for alert in alerts:
             body = alert.get_body()
-            body['href'] = "%s/%s" % (request.base_url.replace('alerts', 'alert'), alert.id)
+            body['href'] = absolute_url('/alert/' + alert.id)
 
             if not last_time:
                 last_time = body['lastReceiveTime']
@@ -136,6 +136,7 @@ def get_alerts():
             autoRefresh=Switch.get('auto-refresh-allow').is_on()
         )
 
+
 @app.route('/alerts/history', methods=['OPTIONS', 'GET'])
 @cross_origin()
 @auth_required
@@ -153,7 +154,7 @@ def get_history():
         return jsonify(status="error", message=str(e)), 500
 
     for alert in history:
-        alert['href'] = "%s/%s" % (request.base_url.replace('alerts/history', 'alert'), alert['id'])
+        alert['href'] = absolute_url('/alert/' + alert['id'])
 
     if len(history) > 0:
         return jsonify(
@@ -169,6 +170,7 @@ def get_history():
             lastTIme=query_time
         )
 
+
 @app.route('/alert', methods=['OPTIONS', 'POST'])
 @cross_origin()
 @auth_required
@@ -181,6 +183,9 @@ def receive_alert():
     except ValueError as e:
         receive_timer.stop_timer(recv_started)
         return jsonify(status="error", message=str(e)), 400
+
+    if g.get('customer', None):
+        incomingAlert.customer = g.get('customer')
 
     if request.headers.getlist("X-Forwarded-For"):
        incomingAlert.attributes.update(ip=request.headers.getlist("X-Forwarded-For")[0])
@@ -203,10 +208,11 @@ def receive_alert():
 
     if alert:
         body = alert.get_body()
-        body['href'] = "%s/%s" % (request.base_url, alert.id)
-        return jsonify(status="ok", id=alert.id, alert=body), 201, {'Location': '%s/%s' % (request.base_url, alert.id)}
+        body['href'] = absolute_url('/alert/' + alert.id)
+        return jsonify(status="ok", id=alert.id, alert=body), 201, {'Location': body['href']}
     else:
         return jsonify(status="error", message="insert or update of received alert failed"), 500
+
 
 @app.route('/alert/<id>', methods=['OPTIONS', 'GET'])
 @cross_origin()
@@ -220,8 +226,10 @@ def get_alert(id):
         return jsonify(status="error", message=str(e)), 500
 
     if alert:
+        if g.get('role', None) != 'admin' and not alert.customer == g.get('customer', None):
+            return jsonify(status="error", message="not found", total=0, alert=None), 404
         body = alert.get_body()
-        body['href'] = request.base_url
+        body['href'] = absolute_url('/alert/' + alert.id)
         return jsonify(status="ok", total=1, alert=body)
     else:
         return jsonify(status="error", message="not found", total=0, alert=None), 404
@@ -232,6 +240,8 @@ def get_alert(id):
 @auth_required
 @jsonp
 def set_status(id):
+
+    # FIXME - should only allow role=user to set status for alerts for that customer
 
     status_started = status_timer.start_timer()
     data = request.json
@@ -259,6 +269,8 @@ def set_status(id):
 @jsonp
 def tag_alert(id):
 
+    # FIXME - should only allow role=user to set status for alerts for that customer
+
     tag_started = tag_timer.start_timer()
     data = request.json
 
@@ -284,6 +296,8 @@ def tag_alert(id):
 @jsonp
 def untag_alert(id):
 
+    # FIXME - should only allow role=user to set status for alerts for that customer
+
     untag_started = untag_timer.start_timer()
     data = request.json
 
@@ -306,6 +320,7 @@ def untag_alert(id):
 @app.route('/alert/<id>', methods=['OPTIONS', 'DELETE', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def delete_alert(id):
 
@@ -362,6 +377,7 @@ def get_counts():
             statusCounts=status_count
         )
 
+
 @app.route('/alerts/top10', methods=['OPTIONS', 'GET'])
 @cross_origin()
 @auth_required
@@ -380,7 +396,7 @@ def get_top10():
 
     for item in top10:
         for resource in item['resources']:
-            resource['href'] = "%s/%s" % (request.base_url.replace('alerts/top10', 'alert'), resource['id'])
+            resource['href'] = absolute_url('/alert/' + resource['id'])
 
     if top10:
         return jsonify(
@@ -395,6 +411,7 @@ def get_top10():
             total=0,
             top10=[],
         )
+
 
 @app.route('/environments', methods=['OPTIONS', 'GET'])
 @cross_origin()
@@ -457,9 +474,11 @@ def get_services():
             services=[],
         )
 
+
 @app.route('/blackouts', methods=['OPTIONS', 'GET'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def get_blackouts():
 
@@ -484,9 +503,11 @@ def get_blackouts():
             time=datetime.datetime.utcnow()
         )
 
+
 @app.route('/blackout', methods=['OPTIONS', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def create_blackout():
 
@@ -514,11 +535,13 @@ def create_blackout():
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
-    return jsonify(status="ok", blackout=blackout), 201, {'Location': '%s/%s' % (request.base_url, blackout)}
+    return jsonify(status="ok", blackout=blackout), 201, {'Location': absolute_url('/blackout/' + blackout)}
+
 
 @app.route('/blackout/<path:blackout>', methods=['OPTIONS', 'DELETE', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def delete_blackout(blackout):
 
@@ -534,7 +557,6 @@ def delete_blackout(blackout):
             return jsonify(status="error", message="not found"), 404
 
 
-# Return a list of heartbeats
 @app.route('/heartbeats', methods=['OPTIONS', 'GET'])
 @cross_origin()
 @auth_required
@@ -549,7 +571,9 @@ def get_heartbeats():
     hb_list = list()
     for hb in heartbeats:
         body = hb.get_body()
-        body['href'] = "%s/%s" % (request.base_url.replace('heartbeats', 'heartbeat'), hb.id)
+        if g.get('role', None) != 'admin' and not body['customer'] == g.get('customer', None):
+            continue
+        body['href'] = absolute_url('/heartbeat/' + hb.id)
         hb_list.append(body)
 
     if hb_list:
@@ -568,6 +592,7 @@ def get_heartbeats():
             time=datetime.datetime.utcnow()
         )
 
+
 @app.route('/heartbeat', methods=['OPTIONS', 'POST'])
 @cross_origin()
 @auth_required
@@ -579,14 +604,18 @@ def create_heartbeat():
     except ValueError as e:
         return jsonify(status="error", message=str(e)), 400
 
+    if g.get('role', None) != 'admin':
+        heartbeat.customer = g.get('customer', None)
+
     try:
         heartbeat = db.save_heartbeat(heartbeat)
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
     body = heartbeat.get_body()
-    body['href'] = "%s/%s" % (request.base_url, heartbeat.id)
-    return jsonify(status="ok", id=heartbeat.id, heartbeat=body), 201, {'Location': '%s/%s' % (request.base_url, heartbeat.id)}
+    body['href'] = absolute_url('/heartbeat/' + heartbeat.id)
+    return jsonify(status="ok", id=heartbeat.id, heartbeat=body), 201, {'Location': body['href']}
+
 
 @app.route('/heartbeat/<id>', methods=['OPTIONS', 'GET'])
 @cross_origin()
@@ -600,15 +629,19 @@ def get_heartbeat(id):
         return jsonify(status="error", message=str(e)), 500
 
     if heartbeat:
+        if g.get('role', None) != 'admin' and not heartbeat.customer == g.get('customer', None):
+            return jsonify(status="error", message="not found", total=0, alert=None), 404
         body = heartbeat.get_body()
-        body['href'] = request.base_url
+        body['href'] = absolute_url('/hearbeat/' + heartbeat.id)
         return jsonify(status="ok", total=1, heartbeat=body)
     else:
         return jsonify(status="error", message="not found", total=0, heartbeat=None), 404
 
+
 @app.route('/heartbeat/<id>', methods=['OPTIONS', 'DELETE', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def delete_heartbeat(id):
 
@@ -623,14 +656,29 @@ def delete_heartbeat(id):
         else:
             return jsonify(status="error", message="not found"), 404
 
+
 @app.route('/users', methods=['OPTIONS', 'GET'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def get_users():
 
+    user_id = request.args.get("id")
+    name = request.args.get("name")
+    login = request.args.get("login")
+
+    if user_id:
+        query = {'user': user_id}
+    elif name:
+        query = {'name': name}
+    elif login:
+        query = {'login': login}
+    else:
+        query = {}
+
     try:
-        users = db.get_users()
+        users = db.get_users(query)
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
@@ -655,9 +703,11 @@ def get_users():
             time=datetime.datetime.utcnow()
         )
 
+
 @app.route('/user', methods=['OPTIONS', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def create_user():
 
@@ -668,20 +718,52 @@ def create_user():
         provider = request.json["provider"]
         text = request.json.get("text", "")
         try:
-            user = db.save_user(str(uuid4()), name, login, password, provider, text)
+            user_id = db.save_user(str(uuid4()), name, login, password, provider, text)
         except Exception as e:
             return jsonify(status="error", message=str(e)), 500
     else:
         return jsonify(status="error", message="must supply user 'name', 'login' and 'provider' as parameters"), 400
 
-    if user:
-        return jsonify(status="ok", user=user), 201, {'Location': '%s/%s' % (request.base_url, user)}
+    if user_id:
+        return jsonify(status="ok", user=user_id), 201, {'Location': absolute_url('/user/' + user_id)}
     else:
         return jsonify(status="error", message="User with that login already exists"), 409
+
+
+@app.route('/user/<user>', methods=['OPTIONS', 'PUT'])
+@cross_origin()
+@auth_required
+@admin_required
+@jsonp
+def update_user(user):
+   
+    if not request.json:
+        return jsonify(status="ok", user=user, message="Nothing to update, request was empty")
+
+    name = request.json.get('name', None)
+    login = request.json.get('login', None)
+    password = request.json.get('password', None)
+    provider = request.json.get('provider', None)
+    text = request.json.get('text', None)
+    email_verified = request.json.get('email_verified', None)
+
+
+    try:
+        user = db.update_user(user, name=name, login=login, password=password, provider=provider,
+                text=text, email_verified=email_verified)
+    except Exception as e:
+        return jsonify(status="error", message=str(e)), 500
+    
+    if user:
+        return jsonify(status="ok", user=user)
+    else:
+        return jsonify(status="error", message="not found"), 404
+
 
 @app.route('/user/<user>', methods=['OPTIONS', 'DELETE', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def delete_user(user):
 
@@ -696,14 +778,90 @@ def delete_user(user):
         else:
             return jsonify(status="error", message="not found"), 404
 
+
+@app.route('/customers', methods=['OPTIONS', 'GET'])
+@cross_origin()
+@auth_required
+@admin_required
+@jsonp
+def get_customers():
+
+    try:
+        customers = db.get_customers()
+    except Exception as e:
+        return jsonify(status="error", message=str(e)), 500
+
+    if len(customers):
+        return jsonify(
+            status="ok",
+            total=len(customers),
+            customers=customers,
+            time=datetime.datetime.utcnow()
+        )
+    else:
+        return jsonify(
+            status="ok",
+            message="not found",
+            total=0,
+            customers=[],
+            time=datetime.datetime.utcnow()
+        )
+
+
+@app.route('/customer', methods=['OPTIONS', 'POST'])
+@cross_origin()
+@auth_required
+@admin_required
+@jsonp
+def create_customer():
+
+    if request.json and 'customer' in request.json and 'match' in request.json:
+        customer = request.json["customer"]
+        match = request.json["match"]
+        try:
+            cid = db.create_customer(customer, match)
+        except Exception as e:
+            return jsonify(status="error", message=str(e)), 500
+    else:
+        return jsonify(status="error", message="must supply user 'customer' and 'match' as parameters"), 400
+
+    if cid:
+        return jsonify(status="ok", id=cid), 201, {'Location': absolute_url('/customer/' + cid)}
+    else:
+        return jsonify(status="error", message="Customer lookup for this match already exists"), 409
+
+
+@app.route('/customer/<customer>', methods=['OPTIONS', 'DELETE', 'POST'])
+@cross_origin()
+@auth_required
+@admin_required
+@jsonp
+def delete_customer(customer):
+
+    if request.method == 'DELETE' or (request.method == 'POST' and request.json['_method'] == 'delete'):
+        try:
+            response = db.delete_customer(customer)
+        except Exception as e:
+            return jsonify(status="error", message=str(e)), 500
+
+        if response:
+            return jsonify(status="ok")
+        else:
+            return jsonify(status="error", message="not found"), 404
+
+
 @app.route('/keys', methods=['OPTIONS', 'GET'])
 @cross_origin()
 @auth_required
 @jsonp
 def get_keys():
 
+    query = dict()
+    if g.get('role', None) != 'admin':
+        query['customer'] = g.get('customer')
+
     try:
-        keys = db.get_keys()
+        keys = db.get_keys(query)
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
@@ -722,6 +880,7 @@ def get_keys():
             keys=[],
             time=datetime.datetime.utcnow()
         )
+
 
 @app.route('/keys/<user>', methods=['OPTIONS', 'GET'])
 @cross_origin()
@@ -729,8 +888,12 @@ def get_keys():
 @jsonp
 def get_user_keys(user):
 
+    query = {"user": user}
+    if g.get('role', None) != 'admin':
+        query['customer'] = g.get('customer')
+
     try:
-        keys = db.get_keys({"user": user})
+        keys = db.get_keys(query)
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
@@ -749,6 +912,7 @@ def get_user_keys(user):
             keys=[],
             time=datetime.datetime.utcnow()
         )
+
 
 @app.route('/key', methods=['OPTIONS', 'POST'])
 @cross_origin()
@@ -765,19 +929,26 @@ def create_key():
     if type not in ['read-only', 'read-write']:
         return jsonify(status="error", message="API key must be read-only or read-write"), 400
 
+    customer = g.get('customer', None) or request.json.get("customer", None)
     text = request.json.get("text", "API Key for %s" % user)
     try:
-        key = db.create_key(user, type, text)
+        key = db.create_key(user, type, customer, text)
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
-    return jsonify(status="ok", key=key), 201, {'Location': '%s/%s' % (request.base_url, key)}
+    return jsonify(status="ok", key=key), 201, {'Location': absolute_url('/key/' + key)}
+
 
 @app.route('/key/<path:key>', methods=['OPTIONS', 'DELETE', 'POST'])
 @cross_origin()
 @auth_required
+@admin_required
 @jsonp
 def delete_key(key):
+
+    query = {"key": key}
+    if not db.get_keys(query):
+        return jsonify(status="error", message="not found"), 404
 
     if request.method == 'DELETE' or (request.method == 'POST' and request.json['_method'] == 'delete'):
         try:

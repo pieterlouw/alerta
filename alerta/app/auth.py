@@ -3,15 +3,20 @@ import jwt
 import json
 import requests
 import bcrypt
+import re
 
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import g, request, redirect
+from flask import g, request, render_template
 from flask_cors import cross_origin
 from jwt import DecodeError, ExpiredSignature, InvalidAudience
 from base64 import urlsafe_b64decode
-from requests_oauthlib import OAuth1
 from uuid import uuid4
+
+import smtplib
+import socket
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 try:
     from urllib.parse import parse_qsl, urlencode
@@ -20,9 +25,11 @@ except ImportError:
     from urllib import urlencode
 
 from alerta.app import app, db
-from alerta.app.utils import jsonify, jsonp, DateEncoder
+from alerta.app.utils import absolute_url, jsonify, DateEncoder
 
 BASIC_AUTH_REALM = "Alerta"
+
+LOG = app.logger
 
 
 class AuthError(Exception):
@@ -34,15 +41,16 @@ class Forbidden(Exception):
 
 
 def verify_api_key(key, method):
-    perm = db.is_key_valid(key)
-    if not perm:
+    key_info = db.is_key_valid(key)
+    if not key_info:
         raise AuthError("API key '%s' is invalid" % key)
-    if method in ['POST', 'DELETE'] and perm != 'read-write':
+    if method in ['POST', 'PUT', 'DELETE'] and key_info['type'] != 'read-write':
         raise Forbidden("%s method requires 'read-write' API Key" % method)
     db.update_key(key)
+    return key_info
 
 
-def create_token(user, name, login, provider=None):
+def create_token(user, name, login, provider=None, customer=None, role='user'):
     payload = {
         'iss': "%s" % request.host_url,
         'sub': user,
@@ -53,6 +61,16 @@ def create_token(user, name, login, provider=None):
         'login': login,
         'provider': provider
     }
+
+    if app.config['ADMIN_USERS']:
+        payload['role'] = role
+
+    if app.config['CUSTOMER_VIEWS']:
+        payload['customer'] = customer
+
+    if provider == 'basic':
+        payload['email_verified'] = db.is_email_verified(login)
+
     token = jwt.encode(payload, key=app.config['SECRET_KEY'], json_encoder=DateEncoder)
     return token.decode('unicode_escape')
 
@@ -75,33 +93,39 @@ def auth_required(f):
         if 'api-key' in request.args:
             key = request.args['api-key']
             try:
-                verify_api_key(key, request.method)
+                ki = verify_api_key(key, request.method)
             except AuthError as e:
                 return authenticate(str(e), 401)
             except Forbidden as e:
                 return authenticate(str(e), 403)
             except Exception as e:
                 return authenticate(str(e), 500)
+            g.customer = ki.get('customer', None)
+            g.role = role(ki['user'])
             return f(*args, **kwargs)
 
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return authenticate('Missing authorization API Key or Bearer Token')
 
-        if auth_header.startswith('Key'):
-            key = auth_header.replace('Key ', '')
+        m = re.match('Key (\S+)', auth_header)
+        if m:
+            key = m.group(1)
             try:
-                verify_api_key(key, request.method)
+                ki = verify_api_key(key, request.method)
             except AuthError as e:
                 return authenticate(str(e), 401)
             except Forbidden as e:
                 return authenticate(str(e), 403)
             except Exception as e:
                 return authenticate(str(e), 500)
+            g.customer = ki.get('customer', None)
+            g.role = role(ki['user'])
             return f(*args, **kwargs)
 
-        if auth_header.startswith('Bearer'):
-            token = auth_header.replace('Bearer ', '')
+        m = re.match('Bearer (\S+)', auth_header)
+        if m:
+            token = m.group(1)
             try:
                 payload = parse_token(token)
             except DecodeError:
@@ -110,12 +134,50 @@ def auth_required(f):
                 return authenticate('Token has expired')
             except InvalidAudience:
                 return authenticate('Invalid audience')
-            g.user_id = payload['sub']
+            g.customer = payload.get('customer', None)
+            g.role = payload.get('role', None)
             return f(*args, **kwargs)
 
         return authenticate('Authentication required')
 
     return decorated
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+
+        if not app.config['AUTH_REQUIRED']:
+            return f(*args, **kwargs)
+
+        if not app.config['ADMIN_USERS']:
+            return f(*args, **kwargs)
+
+        if g.role != 'admin':
+            return authenticate('Admin required', 403)
+        else:
+            return f(*args, **kwargs)
+
+    return decorated
+
+
+def role(user):
+    return 'admin' if user in app.config['ADMIN_USERS'] else 'user'
+
+
+class NoCustomerMatch(KeyError):
+    pass
+
+
+def customer_match(user, groups):
+    if role(user) == 'admin':
+        return None
+    else:
+        match = db.get_customer_by_match([user] + groups)
+        if match:
+            return match
+        else:
+            raise NoCustomerMatch
 
 
 @app.route('/auth/login', methods=['OPTIONS', 'POST'])
@@ -135,13 +197,28 @@ def login():
         return jsonify(status="error", message="User %s does not exist" % email), 401, \
             {'WWW-Authenticate': 'Basic realm="%s"' % BASIC_AUTH_REALM}
     else:
-        user = db.get_users(query={"login": email})[0]
+        user = db.get_users(query={"login": email}, password=True)[0]
 
     if not bcrypt.hashpw(password.encode('utf-8'), user['password'].encode('utf-8')) == user['password'].encode('utf-8'):
         return jsonify(status="error", message="User %s is not authorized" % email), 401, \
             {'WWW-Authenticate': 'Basic realm="%s"' % BASIC_AUTH_REALM}
 
-    token = create_token(user['id'], user['name'], email, provider='basic')
+    if app.config['EMAIL_VERIFICATION'] and not db.is_email_verified(email):
+        return jsonify(status="error", message="email address %s has not been verified" % email), 401
+
+    if app.config['AUTH_REQUIRED'] and not ('*' in app.config['ALLOWED_EMAIL_DOMAINS']
+            or email.split('@')[1] in app.config['ALLOWED_EMAIL_DOMAINS']):
+        return jsonify(status="error", message="User %s is not authorized" % email), 403
+
+    if app.config['CUSTOMER_VIEWS']:
+        try:
+            customer = customer_match(email, groups=[email.split('@')[1]])
+        except NoCustomerMatch:
+            return jsonify(status="error", message="No customer lookup defined for user %s" % email), 403
+    else:
+        customer = None
+
+    token = create_token(user['id'], user['name'], email, provider='basic', customer=customer, role=role(email))
     return jsonify(token=token)
 
 
@@ -151,24 +228,91 @@ def signup():
 
     if request.json and 'name' in request.json:
         name = request.json["name"]
-        login = request.json["email"]
+        email = request.json["email"]
         password = request.json["password"]
         provider = request.json.get("provider", "basic")
         text = request.json.get("text", "")
         try:
-            user_id = db.save_user(str(uuid4()), name, login, password, provider, text)
+            user_id = db.save_user(str(uuid4()), name, email, password, provider, text, email_verified=False)
         except Exception as e:
             return jsonify(status="error", message=str(e)), 500
     else:
         return jsonify(status="error", message="must supply user 'name', 'email' and 'password' as parameters"), 400
 
+    if app.config['EMAIL_VERIFICATION']:
+        send_confirmation(name, email)
+        if not db.is_email_verified(email):
+            return jsonify(status="error", message="email address %s has not been verified" % email), 401
+
+    if app.config['AUTH_REQUIRED'] and not ('*' in app.config['ALLOWED_EMAIL_DOMAINS']
+            or email.split('@')[1] in app.config['ALLOWED_EMAIL_DOMAINS']):
+        return jsonify(status="error", message="User %s is not authorized" % email), 403
+
     if user_id:
         user = db.get_user(user_id)
     else:
-        user = db.get_users(query={"login": login})[0]
+        return jsonify(status="error", message="User with that login already exists"), 409
 
-    token = create_token(user['id'], user['name'], login, provider='basic')
+    if app.config['CUSTOMER_VIEWS']:
+        try:
+            customer = customer_match(email, groups=[email.split('@')[1]])
+        except NoCustomerMatch:
+            return jsonify(status="error", message="No customer lookup defined for user %s" % email), 403
+    else:
+        customer = None
+
+    token = create_token(user['id'], user['name'], email, provider='basic', customer=customer, role=role(email))
     return jsonify(token=token)
+
+
+def send_confirmation(name, email):
+
+    msg = MIMEMultipart('related')
+    msg['Subject'] = "[Alerta] Please verify your email '%s'" % email
+    msg['From'] = app.config['MAIL_FROM']
+    msg['To'] = email
+    msg.preamble = "[Alerta] Please verify your email '%s'" % email
+
+    confirm_hash = str(uuid4())
+    db.set_user_hash(email, confirm_hash)
+
+    text = 'Hello {name}!\n\n' \
+           'Please verify your email address is {email} by clicking on the link below:\n\n' \
+           '{url}\n\n' \
+           'You\'re receiving this email because you recently created a new Alerta account.' \
+           ' If this wasn\'t you, please ignore this email.'.format(
+               name=name, email=email, url=absolute_url('/auth/confirm/' + confirm_hash))
+
+    msg_text = MIMEText(text, 'plain', 'utf-8')
+    msg.attach(msg_text)
+
+    try:
+        mx = smtplib.SMTP(app.config['SMTP_HOST'], app.config['SMTP_PORT'])
+        if app.config['DEBUG']:
+            mx.set_debuglevel(True)
+        mx.ehlo()
+        mx.starttls()
+        mx.login(app.config['MAIL_FROM'], app.config['SMTP_PASSWORD'])
+        mx.sendmail(app.config['MAIL_FROM'], [email], msg.as_string())
+        mx.close()
+    except (socket.error, socket.herror, socket.gaierror) as e:
+        LOG.error('Mail server connection error: %s', str(e))
+        return
+    except smtplib.SMTPException as e:
+        LOG.error('Failed to send email : %s', str(e))
+    except Exception as e:
+        LOG.error('Unhandled exception: %s', str(e))
+
+
+@app.route('/auth/confirm/<hash>', methods=['GET'])
+def verify_email(hash):
+
+    email = db.is_hash_valid(hash)
+    if email:
+        db.validate_user(email)
+        return render_template('auth/verify_success.html', email=email)
+    else:
+        return render_template('auth/verify_failed.html')
 
 
 @app.route('/auth/google', methods=['OPTIONS', 'POST'])
@@ -203,16 +347,24 @@ def google():
 
     email = claims.get('email')
     if app.config['AUTH_REQUIRED'] and not ('*' in app.config['ALLOWED_EMAIL_DOMAINS']
-            or email.split('@')[1] in app.config['ALLOWED_EMAIL_DOMAINS']
-            or db.is_user_valid(login=email)):
+            or email.split('@')[1] in app.config['ALLOWED_EMAIL_DOMAINS']):
         return jsonify(status="error", message="User %s is not authorized" % email), 403
 
     headers = {'Authorization': 'Bearer ' + token['access_token']}
     r = requests.get(people_api_url, headers=headers)
     profile = r.json()
 
+    if app.config['CUSTOMER_VIEWS']:
+        try:
+            customer = customer_match(email, groups=[email.split('@')[1]])
+        except NoCustomerMatch:
+            return jsonify(status="error", message="No customer lookup defined for user %s" % email), 403
+    else:
+        customer = None
+
     try:
-        token = create_token(profile['sub'], profile['name'], email, provider='google')
+        token = create_token(profile['sub'], profile['name'], email, provider='google',
+                             customer=customer, role=role(email))
     except KeyError:
         return jsonify(status="error", message="Google+ API is not enabled for this Client ID")
 
@@ -241,45 +393,23 @@ def github():
 
     r = requests.get(profile['organizations_url'], params=access_token)
     organizations = [o['login'] for o in r.json()]
-
     login = profile['login']
+
     if app.config['AUTH_REQUIRED'] and not ('*' in app.config['ALLOWED_GITHUB_ORGS']
-            or set(app.config['ALLOWED_GITHUB_ORGS']).intersection(set(organizations))
-            or db.is_user_valid(login=login)):
+            or set(app.config['ALLOWED_GITHUB_ORGS']).intersection(set(organizations))):
         return jsonify(status="error", message="User %s is not authorized" % login), 403
 
-    token = create_token(profile['id'], profile.get('name', None) or '@'+login, login, provider='github')
-    return jsonify(token=token)
-
-
-@app.route('/auth/twitter', methods=['OPTIONS', 'POST'])
-@cross_origin(supports_credentials=True)
-def twitter():
-    request_token_url = 'https://api.twitter.com/oauth/request_token'
-    access_token_url = 'https://api.twitter.com/oauth/access_token'
-
-    if request.json.get('oauth_token') and request.json.get('oauth_verifier'):
-        auth = OAuth1(app.config['OAUTH2_CLIENT_ID'],
-                      client_secret=app.config['OAUTH2_CLIENT_SECRET'],
-                      resource_owner_key=request.json.get('oauth_token'),
-                      verifier=request.json.get('oauth_verifier'))
-        r = requests.post(access_token_url, auth=auth)
-        profile = dict(parse_qsl(r.text))
-
-        login = profile['screen_name']
-        if app.config['AUTH_REQUIRED'] and not db.is_user_valid(login=login):
-            return jsonify(status="error", message="User %s is not authorized" % login), 403
-
-        token = create_token(profile['user_id'], '@'+login, login, provider='twitter')
-        return jsonify(token=token)
+    if app.config['CUSTOMER_VIEWS']:
+        try:
+            customer = customer_match(login, organizations)
+        except NoCustomerMatch:
+            return jsonify(status="error", message="No customer lookup defined for user %s" % login), 403
     else:
-        oauth = OAuth1(app.config['OAUTH2_CLIENT_ID'],
-                       client_secret=app.config['OAUTH2_CLIENT_SECRET'],
-                       callback_uri=app.config.get('TWITTER_CALLBACK_URL', request.headers.get('Referer', ''))
-        )
-        r = requests.post(request_token_url, auth=oauth)
-        oauth_token = dict(parse_qsl(r.text))
-        return jsonify(oauth_token)
+        customer = None
+
+    token = create_token(profile['id'], profile.get('name', None) or '@'+login, login, provider='github',
+                         customer=customer, role=role(login))
+    return jsonify(token=token)
 
 
 @app.route('/auth/gitlab', methods=['OPTIONS', 'POST'])
@@ -311,12 +441,20 @@ def gitlab():
 
     r = requests.get(gitlab_api_url+'/groups', params=access_token)
     groups = [g['path'] for g in r.json()]
-
     login = profile['username']
+
     if app.config['AUTH_REQUIRED'] and not ('*' in app.config['ALLOWED_GITLAB_GROUPS']
-            or set(app.config['ALLOWED_GITLAB_GROUPS']).intersection(set(groups))
-            or db.is_user_valid(login=login)):
+            or set(app.config['ALLOWED_GITLAB_GROUPS']).intersection(set(groups))):
         return jsonify(status="error", message="User %s is not authorized" % login), 403
 
-    token = create_token(profile['id'], profile.get('name', None) or '@'+login, login, provider='gitlab')
+    if app.config['CUSTOMER_VIEWS']:
+        try:
+            customer = customer_match(login, groups)
+        except NoCustomerMatch:
+            return jsonify(status="error", message="No customer lookup defined for user %s" % login), 403
+    else:
+        customer = None
+
+    token = create_token(profile['id'], profile.get('name', None) or '@'+login, login, provider='gitlab',
+                         customer=customer, role=role(login))
     return jsonify(token=token)

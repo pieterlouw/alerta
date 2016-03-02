@@ -7,6 +7,7 @@ from flask import request, Response, url_for, jsonify, render_template
 from flask.ext.cors import cross_origin
 
 from alerta.app import app, db
+from alerta.app.auth import auth_required
 from alerta.app.switch import Switch, SwitchState
 from alerta.app.metrics import Gauge, Counter, Timer
 from alerta import build
@@ -23,6 +24,7 @@ switches = [
 total_alert_gauge = Gauge('alerts', 'total', 'Total alerts', 'Total number of alerts in the database')
 started = time.time() * 1000
 
+
 @app.route('/management', methods=['OPTIONS', 'GET'])
 @cross_origin()
 def management():
@@ -32,13 +34,15 @@ def management():
         url_for('properties'),
         url_for('switchboard'),
         url_for('health_check'),
-        url_for('status')
+        url_for('status'),
+        url_for('prometheus_metrics')
     ]
     return render_template('management/index.html', endpoints=endpoints)
 
 
 @app.route('/management/manifest', methods=['OPTIONS', 'GET'])
 @cross_origin()
+@auth_required
 def manifest():
 
     manifest = {
@@ -57,6 +61,7 @@ def manifest():
 
 @app.route('/management/properties', methods=['OPTIONS', 'GET'])
 @cross_origin()
+@auth_required
 def properties():
 
     properties = ''
@@ -72,6 +77,7 @@ def properties():
 
 @app.route('/management/switchboard', methods=['OPTIONS', 'GET', 'POST'])
 @cross_origin()
+@auth_required
 def switchboard():
 
     if request.method == 'POST':
@@ -114,13 +120,14 @@ def health_check():
 
 @app.route('/management/status', methods=['OPTIONS', 'GET'])
 @cross_origin()
+@auth_required
 def status():
 
     total_alert_gauge.set(db.get_count())
 
-    metrics = Gauge.get_gauges()
-    metrics.extend(Counter.get_counters())
-    metrics.extend(Timer.get_timers())
+    metrics = Gauge.get_gauges(format='json')
+    metrics.extend(Counter.get_counters(format='json'))
+    metrics.extend(Timer.get_timers(format='json'))
 
     auto_refresh_allow = {
         "group": "switch",
@@ -135,3 +142,17 @@ def status():
     now = int(time.time() * 1000)
 
     return jsonify(application="alerta", version=__version__, time=now, uptime=int(now - started), metrics=metrics)
+
+
+@app.route('/management/metrics', methods=['OPTIONS', 'GET'])
+@cross_origin()
+# @auth_required  # FIXME - prometheus only supports Authorization header with "Bearer" token
+def prometheus_metrics():
+
+    total_alert_gauge.set(db.get_count())
+
+    output = Gauge.get_gauges(format='prometheus')
+    output += Counter.get_counters(format='prometheus')
+    output += Timer.get_timers(format='prometheus')
+
+    return Response(output, content_type='text/plain; version=0.0.4; charset=utf-8')
